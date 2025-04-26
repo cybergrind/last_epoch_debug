@@ -1,0 +1,10 @@
+{
+    "exclude": [
+        "game_folder",
+        "Filgers",
+        "Metadata",
+        "wine_dir",
+        "editor",
+        "Il2CppDumper*"
+    ]
+}

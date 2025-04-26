@@ -1,0 +1,56 @@
+[project]
+name = 'last_epoch_scripts'
+version = '0.1.0'
+description = 'Stub project'
+authors = [{ name = 'github.com/cybergrind' }]
+license = { text = 'Apache-2.0' }
+requires-python = '>=3.13'
+dependencies = [
+  'ipython',
+]
+
+# installed with: uv sync
+[dependency-groups]
+dev = ['ruff', 'pre-commit>=4.1.0', 'uv>=0.6.1']
+
+[tool.ruff]
+line-length = 100
+target-version = 'py313'
+indent-width = 4
+exclude = ['.venv', '.git']
+
+[tool.ruff.format]
+quote-style = 'single'
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+known-first-party = ['snapshot_manager']
+lines-after-imports = 2
+
+[tool.ruff.lint]
+ignore = [
+  'T201',  # print
+  'G004',  # logging format
+  'Q000',  # quotes
+  'Q001',  # quotes
+  'Q003',  # quotes
+]
+fixable = ['ALL']
+select = [
+  'E',     # pycodestyle
+  'F',     # pyflakes
+  'I',     # isort
+  'G',     # flake8-logging-format
+  'ASYNC', # flake8-async
+  'PIE',   # flake8-pie
+  'T20',   # flake8-print
+  'PT',    # flake8-pytest-style
+  'Q',     # flake8-quotes
+  'RUF',
+]
+exclude = ['alembic/*']
+
+[tool.ruff.lint.flake8-quotes]
+docstring-quotes = 'double'
+inline-quotes = 'single'
+multiline-quotes = 'single'

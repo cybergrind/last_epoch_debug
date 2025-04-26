@@ -1,0 +1,8 @@
+game_folder
+Filters
+Metadata
+wine_dir
+Il2CppDumper*
+editor/
+
+/wine_custom/.envrc.proton

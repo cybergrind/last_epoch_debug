@@ -1,0 +1,20 @@
+{
+    "search.exclude": {
+        "/game_folder/": true,
+        "/Filters/": true,
+        "/Metadata/": true,
+        "/wine_dir/": true
+    },
+    "files.exclude": {
+        "Filters/": true,
+        "game_folder/": true,
+        "Metadata/": true,
+        "wine_dir/": true
+    },
+    "files.watcherExclude": {
+        "/game_folder": true,
+        "/Filters": true,
+        "/Metadata": true,
+        "/wine_dir": true
+    }
+}
