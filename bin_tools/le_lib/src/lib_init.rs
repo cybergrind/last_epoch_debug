@@ -9,6 +9,7 @@ use std::sync::{Mutex, Once};
 
 // local imports
 use crate::echo::le_lib_echo;
+use crate::hook_tools::load_hooks_config;
 use crate::initialize_logger;
 use crate::wine_hooks::initialize_wine_hooks;
 
@@ -84,6 +85,7 @@ unsafe extern "C" fn dll_loaded_callback(dll_path: *const c_char, base_address: 
             }
         }
     }
+    // le_lib_load_hook();
 }
 
 /// Constructor attribute - This function will be called automatically when the library is loaded
@@ -111,6 +113,7 @@ pub static __LE_LIB_CONSTRUCTOR: extern "C" fn() = {
 /// 2. Sets up hook that will log after DLL is loaded in memory
 /// 3. Initializes global hashmap for hooks
 /// 4. Initializes Wine DLL loading hooks
+/// 5. Reads hooks configuration from file
 #[unsafe(no_mangle)]
 pub extern "C" fn le_lib_init() -> bool {
     let mut success = true;
@@ -120,7 +123,27 @@ pub extern "C" fn le_lib_init() -> bool {
         initialize_logger();
         info!("le_lib_init: Library initialization started");
 
+        // register hook `le_lib_echo`
+        if !register_hook("le_lib_echo", le_lib_echo as HookFunctionPtr) {
+            error!("le_lib_init: Failed to register le_lib_echo hook");
+            success = false;
+        } else {
+            info!("le_lib_init: le_lib_echo hook registered successfully");
+        }
 
+        // Read hooks configuration
+        match load_hooks_config() {
+            Ok(config) => {
+                info!("le_lib_init: Loaded hooks configuration with {} hooks", config.hooks.len());
+                for hook in &config.hooks {
+                    info!("le_lib_init: Found hook '{}' in config targeting '{}'", hook.name, hook.target_address);
+                }
+            },
+            Err(e) => {
+                warn!("le_lib_init: Failed to load hooks config: {}", e);
+                warn!("le_lib_init: Will try loading hooks when le_lib_load_hook is called");
+            }
+        };
 
         // Initialize hooks hashmap (already done via lazy_static)
         info!("le_lib_init: Hooks hashmap initialized");
@@ -153,14 +176,6 @@ pub extern "C" fn le_lib_init() -> bool {
                     success = false;
                 }
             }
-        }
-
-        // register hook `le_lib_echo`
-        if !register_hook("le_lib_echo", le_lib_echo as HookFunctionPtr) {
-            error!("le_lib_init: Failed to register le_lib_echo hook");
-            success = false;
-        } else {
-            info!("le_lib_init: le_lib_echo hook registered successfully");
         }
 
         if success {

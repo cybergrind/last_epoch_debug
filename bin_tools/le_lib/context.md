@@ -60,4 +60,7 @@ LD_PRELOAD=$(pwd)/target/debug/lible_lib.so $WINELOADER cmd /c exit
 
 # test are only single threaded for now
 cargo test -- --test-threads=1
+
+# game start params
+HOOKS_CONFIG_PATH=/home/kpi/devel/github/last_epoch_debug/bin_tools/le_lib/examples/ls_hook_example/le_hook.yaml LD_PRELOAD=/home/kpi/devel/github/last_epoch_debug/bin_tools/le_lib/target/debug/lible_lib.so %command%
 ```

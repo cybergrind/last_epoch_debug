@@ -1,10 +1,11 @@
 use lazy_static::lazy_static;
-use log::{error, info};
+use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs;
 use std::process::Command;
+use std::ptr;
 use std::sync::Mutex;
 
 use crate::constants::get_hooks_config_path;
@@ -16,6 +17,8 @@ pub struct Hook {
     pub target_address: String,
     pub memory_content: String,
     pub hook_function: String,
+    pub wait_for_file: Option<String>,
+    pub target_process: Option<String>,
 }
 
 // Structure to represent the hooks configuration
@@ -40,8 +43,117 @@ lazy_static! {
     static ref ACTIVE_HOOKS: Mutex<HashMap<String, ActiveHook>> = Mutex::new(HashMap::new());
 }
 
+/// Safely checks if memory at the given address is accessible
+pub fn is_memory_accessible(address: u64, size: usize) -> bool {
+    // Log the attempt for debugging
+    // info!("Checking memory accessibility at address 0x{:x} for {} bytes", address, size);
+
+    // We use a more robust method combining signal handling and proc maps
+    // First, check if the memory region is mapped in our process
+    let is_mapped = check_memory_mapped(address, size);
+    // do not use parentheses in the if statement
+    if !is_mapped {
+        // warn!("Memory region 0x{:x} - 0x{:x} is not mapped in the process", address, address + size as u64);
+        return false;
+    }
+
+    // If mapped, use signal handling as a second check
+    use libc::{SA_RESETHAND, c_int, sigaction, sigemptyset, sighandler_t};
+    use std::mem;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static MEMORY_ACCESS_FAILED: AtomicBool = AtomicBool::new(false);
+
+    extern "C" fn handle_sigsegv(_: c_int) {
+        MEMORY_ACCESS_FAILED.store(true, Ordering::SeqCst);
+    }
+
+    unsafe {
+        // Reset the flag
+        MEMORY_ACCESS_FAILED.store(false, Ordering::SeqCst);
+
+        // Set up signal handler for SIGSEGV
+        let mut sa: sigaction = mem::zeroed();
+        sa.sa_sigaction = handle_sigsegv as sighandler_t;
+        sigemptyset(&mut sa.sa_mask);
+        sa.sa_flags = SA_RESETHAND;
+
+        // Backup old signal handler
+        let mut old_sa: sigaction = mem::zeroed();
+        if sigaction(libc::SIGSEGV, &sa, &mut old_sa) != 0 {
+            warn!("Failed to set SIGSEGV handler for memory accessibility check");
+            return false;
+        }
+
+        // Try to read the memory very carefully - use volatile reads only on the first and last bytes
+        let ptr = address as *const u8;
+
+        // Only check first and last byte to minimize risk
+        if !MEMORY_ACCESS_FAILED.load(Ordering::SeqCst) {
+            let _ = ptr::read_volatile(ptr);
+        }
+
+        if size > 1 && !MEMORY_ACCESS_FAILED.load(Ordering::SeqCst) {
+            let _ = ptr::read_volatile(ptr.add(size - 1));
+        }
+
+        // Restore old signal handler
+        sigaction(libc::SIGSEGV, &old_sa, std::ptr::null_mut());
+
+        if MEMORY_ACCESS_FAILED.load(Ordering::SeqCst) {
+            warn!("SIGSEGV triggered while checking memory at 0x{:x}", address);
+            false
+        } else {
+            info!("Memory at address 0x{:x} appears to be accessible", address);
+            true
+        }
+    }
+}
+
+/// Check if a memory region is mapped in the process by reading /proc/self/maps
+fn check_memory_mapped(address: u64, size: usize) -> bool {
+    use std::fs::File;
+    use std::io::{BufRead, BufReader};
+
+    let maps_path = "/proc/self/maps";
+    let file = match File::open(maps_path) {
+        Ok(f) => f,
+        Err(e) => {
+            error!("Failed to open {}: {}", maps_path, e);
+            return false;
+        }
+    };
+
+    let reader = BufReader::new(file);
+    let end_address = address + size as u64;
+
+    for line in reader.lines().filter_map(Result::ok) {
+        // Parse address range from line like: "7f9d80617000-7f9d80619000 r-xp ..."
+        if let Some(addr_range) = line.split_whitespace().next() {
+            let parts: Vec<&str> = addr_range.split('-').collect();
+            if parts.len() == 2 {
+                if let (Ok(start), Ok(end)) = (
+                    u64::from_str_radix(parts[0], 16),
+                    u64::from_str_radix(parts[1], 16),
+                ) {
+                    // Check if our target address range overlaps with this mapped range
+                    if address >= start && end_address <= end {
+                        info!(
+                            "Memory region 0x{:x} - 0x{:x} is mapped in range 0x{:x} - 0x{:x}",
+                            address, end_address, start, end
+                        );
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    false
+}
+
 /// Loads hooks from the specified YAML configuration file
-fn load_hooks_config() -> Result<HooksConfig, String> {
+pub fn load_hooks_config() -> Result<HooksConfig, String> {
     match fs::read_to_string(get_hooks_config_path()) {
         Ok(yaml_content) => match serde_yaml::from_str::<HooksConfig>(&yaml_content) {
             Ok(config) => Ok(config),
@@ -65,27 +177,130 @@ fn get_function_address(function_name: &str) -> Result<u64, String> {
     }
 }
 
+/// Parses a hexadecimal address string, handling the optional '0x' prefix
+pub fn parse_hex_address(address_str: &str) -> Result<u64, String> {
+    // Remove '0x' prefix if present
+    let clean_addr = address_str.trim_start_matches("0x");
+
+    // Parse the hexadecimal string
+    match u64::from_str_radix(clean_addr, 16) {
+        Ok(addr) => Ok(addr),
+        Err(_) => Err(format!("Invalid hexadecimal address: {}", address_str)),
+    }
+}
+
+/// Converts a memory content string to bytes, handling both raw ASCII characters and \x escape sequences
+pub fn memory_content_to_bytes(content: &str) -> Vec<u8> {
+    let mut result = Vec::new();
+    let mut chars = content.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '\\' && chars.peek() == Some(&'x') {
+            // Process \x escape sequence
+            chars.next(); // Skip 'x'
+
+            // Get the next two hex characters
+            let mut hex_str = String::new();
+            if let Some(h1) = chars.next() {
+                hex_str.push(h1);
+                if let Some(h2) = chars.next() {
+                    hex_str.push(h2);
+
+                    // Convert hex to byte
+                    if let Ok(byte) = u8::from_str_radix(&hex_str, 16) {
+                        result.push(byte);
+                    } else {
+                        warn!("Invalid hex escape sequence: \\x{}", hex_str);
+                        // Preserve the original characters on error
+                        result.push(b'\\');
+                        result.push(b'x');
+                        hex_str.chars().for_each(|c| result.push(c as u8));
+                    }
+                } else {
+                    // Not enough characters, treat as literal \xh
+                    result.push(b'\\');
+                    result.push(b'x');
+                    result.push(h1 as u8);
+                }
+            } else {
+                // No characters after \x, treat as literal \x
+                result.push(b'\\');
+                result.push(b'x');
+            }
+        } else {
+            // Regular character, use its ASCII/Unicode value
+            result.push(c as u8);
+        }
+    }
+
+    result
+}
+
+fn get_process_name_from_proc() -> String {
+    // Read the process name from /proc/self/cmdline
+    let cmdline_path = "/proc/self/cmdline";
+    let cmdline = fs::read_to_string(cmdline_path).unwrap_or_else(|_| "unknown".to_string());
+    cmdline.split('\0').next().unwrap_or("unknown").to_string()
+}
+
 /// Verifies memory content at the specified address matches what's expected
 unsafe fn verify_memory_content(address: u64, expected_content: &str) -> bool {
     // Convert the expected content string to bytes
-    let expected_bytes = expected_content
-        .replace("\\x", "")
-        .chars()
-        .collect::<Vec<char>>()
-        .chunks(2)
-        .map(|chunk| {
-            let hex_str = chunk.iter().collect::<String>();
-            u8::from_str_radix(&hex_str, 16).unwrap_or(0)
-        })
-        .collect::<Vec<u8>>();
+    info!("Verifying memory content at address 0x{:x}", address);
+    let expected_bytes = memory_content_to_bytes(expected_content);
+    let process_name = get_process_name_from_proc();
 
-    // Read the actual memory at the address
-    unsafe {
-        let actual_bytes = std::slice::from_raw_parts(address as *const u8, expected_bytes.len());
+    info!(
+        "Process: {} Checking memory at address 0x{:x} for {} bytes",
+        process_name,
+        address,
+        expected_bytes.len()
+    );
 
-        // Compare the expected and actual bytes
-        expected_bytes == actual_bytes
+    // First check if the memory is accessible - this is critical to avoid segfaults
+    if !is_memory_accessible(address, expected_bytes.len()) {
+        warn!(
+            "Memory at address 0x{:x} is not accessible, skipping content verification",
+            address
+        );
+        return false;
     }
+
+    // We'll be extremely cautious about memory access
+    let result = unsafe {
+        // Use a closure to contain any potential memory access issues
+        let verify_result = std::panic::catch_unwind(|| {
+            info!("Reading memory at address 0x{:x}", address);
+            let actual_bytes =
+                std::slice::from_raw_parts(address as *const u8, expected_bytes.len());
+            info!("Actual bytes read: {:02X?}", actual_bytes);
+            info!("Expected bytes: {:02X?}", expected_bytes);
+
+            expected_bytes == actual_bytes
+        });
+
+        match verify_result {
+            Ok(result) => result,
+            Err(_) => {
+                error!(
+                    "Panic occurred during memory verification at address 0x{:x}",
+                    address
+                );
+                false
+            }
+        }
+    };
+
+    if result {
+        info!("Memory content at 0x{:x} matches expected pattern", address);
+    } else {
+        info!(
+            "Memory content at 0x{:x} does not match expected pattern",
+            address
+        );
+    }
+
+    result
 }
 
 /// Generates assembly for the hook trampoline
@@ -94,9 +309,38 @@ fn generate_hook_assembly(
     target_address: u64,
     hook_function_address: u64,
 ) -> Result<(String, String), String> {
+    // Get a reliable temporary directory
+    let tmp_dir = std::env::var("TMPDIR")
+        .or_else(|_| std::env::var("TMP"))
+        .or_else(|_| std::env::var("TEMP"))
+        .unwrap_or_else(|_| {
+            if std::path::Path::new("/tmp").exists() && is_path_writable("/tmp/test_write").is_ok()
+            {
+                "/tmp".to_string()
+            } else {
+                format!("{}/tmp", std::env::var("HOME").unwrap_or(".".to_string()))
+            }
+        });
+
+    // Create the directory if it doesn't exist
+    if !std::path::Path::new(&tmp_dir).exists() {
+        if let Err(e) = std::fs::create_dir_all(&tmp_dir) {
+            return Err(format!(
+                "Failed to create temporary directory {}: {}",
+                tmp_dir, e
+            ));
+        }
+    }
+
     // Create temporary file paths
-    let trampoline_asm_path = format!("/tmp/{}_trampoline.asm", hook_name);
-    let jumper_asm_path = format!("/tmp/{}_jumper.asm", hook_name);
+    let trampoline_asm_path = format!("{}/{}_trampoline.asm", tmp_dir, hook_name);
+    let jumper_asm_path = format!("{}/{}_jumper.asm", tmp_dir, hook_name);
+
+    info!("Using temporary directory: {}", tmp_dir);
+    info!(
+        "Generating assembly files: {} and {}",
+        trampoline_asm_path, jumper_asm_path
+    );
 
     // Create the trampoline assembly
     let trampoline_asm = format!(
@@ -174,9 +418,101 @@ _start:
     Ok((trampoline_asm_path, jumper_asm_path))
 }
 
+/// Check if a path is writable
+fn is_path_writable(path: &str) -> Result<(), String> {
+    let dir_path = std::path::Path::new(path)
+        .parent()
+        .ok_or_else(|| format!("Invalid path: {}", path))?;
+
+    // Create directory if it doesn't exist
+    if !dir_path.exists() {
+        std::fs::create_dir_all(dir_path)
+            .map_err(|e| format!("Failed to create directory {}: {}", dir_path.display(), e))?;
+    }
+
+    // Check if we can write to this location
+    let test_file = format!("{}.writetest", path);
+    match std::fs::File::create(&test_file) {
+        Ok(_) => {
+            // Clean up the test file
+            if let Err(e) = std::fs::remove_file(&test_file) {
+                warn!("Failed to remove test file {}: {}", test_file, e);
+            }
+            Ok(())
+        }
+        Err(e) => Err(format!("Cannot write to {}: {}", path, e)),
+    }
+}
+
+/// Find the NASM executable, checking both Linux and Wine paths
+fn find_nasm_path() -> Result<String, String> {
+    // Try standard Linux path first
+    let linux_path = "/usr/bin/nasm";
+    if std::path::Path::new(linux_path).exists() {
+        info!("Found NASM at Linux path: {}", linux_path);
+        return Ok(linux_path.to_string());
+    }
+
+    // Try Wine paths
+    let wine_paths = vec![
+        "Z:\\usr\\bin\\nasm",
+        "Z:/usr/bin/nasm",
+        "C:\\windows\\system32\\nasm.exe",
+        "C:/windows/system32/nasm.exe",
+    ];
+
+    for path in wine_paths {
+        if std::path::Path::new(path).exists() {
+            info!("Found NASM at Wine path: {}", path);
+            return Ok(path.to_string());
+        }
+    }
+
+    // Check if nasm is in PATH
+    match Command::new("which").arg("nasm").output() {
+        Ok(output) if output.status.success() => {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            info!("Found NASM in PATH at: {}", path);
+            return Ok(path);
+        }
+        _ => {}
+    }
+
+    // Last resort - just try "nasm" and hope it's in the PATH
+    match Command::new("nasm").arg("--version").output() {
+        Ok(output) if output.status.success() => {
+            info!("Found NASM in PATH (version check successful)");
+            return Ok("nasm".to_string());
+        }
+        _ => {}
+    }
+
+    Err("Could not find NASM executable. Please ensure NASM is installed.".to_string())
+}
+
 /// Compiles assembly code using NASM
 fn compile_assembly(asm_path: &str, output_path: &str) -> Result<(), String> {
-    let output = Command::new("nasm")
+    // Use the find_nasm_path function to locate NASM
+    let nasm_path = find_nasm_path()?;
+
+    // Print command for debugging
+    info!(
+        "Running: {} -o {} -f elf64 -l -g -w+all {}",
+        nasm_path, output_path, asm_path
+    );
+
+    // Check if the assembly file exists
+    if !std::path::Path::new(asm_path).exists() {
+        return Err(format!("Assembly file not found: {}", asm_path));
+    }
+
+    // Check if the output path is writable
+    if let Err(e) = is_path_writable(output_path) {
+        return Err(format!("Output path is not writable: {}", e));
+    }
+
+    // Execute the command
+    let output = Command::new(&nasm_path)
         .args(&[
             "-o",
             output_path,
@@ -188,13 +524,27 @@ fn compile_assembly(asm_path: &str, output_path: &str) -> Result<(), String> {
             asm_path,
         ])
         .output()
-        .map_err(|e| format!("Failed to execute nasm: {}", e))?;
+        .map_err(|e| format!("Failed to execute nasm at {}: {}", nasm_path, e))?;
 
+    // Check if the command was successful
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("NASM compilation failed: {}", stderr));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Err(format!(
+            "NASM compilation failed: stderr={}, stdout={}, command={} -o {} -f elf64 -l -g -w+all {}",
+            stderr, stdout, nasm_path, output_path, asm_path
+        ));
     }
 
+    // Check if the output file was created
+    if !std::path::Path::new(output_path).exists() {
+        return Err(format!(
+            "Compilation succeeded but output file not found: {}",
+            output_path
+        ));
+    }
+
+    info!("Successfully compiled {} to {}", asm_path, output_path);
     Ok(())
 }
 
@@ -205,8 +555,7 @@ unsafe fn inject_hook(
     _jumper_path: &str,
 ) -> Result<ActiveHook, String> {
     // Parse the target address
-    let target_address = u64::from_str_radix(&hook.target_address, 16)
-        .map_err(|_| format!("Invalid target address: {}", hook.target_address))?;
+    let target_address = parse_hex_address(&hook.target_address)?;
 
     // Get the hook function address
     let hook_function_address = get_function_address(&hook.hook_function)?;
@@ -233,21 +582,30 @@ unsafe fn inject_hook(
     })
 }
 
+fn get_only_matching_hooks(process_name: &str) -> Vec<Hook> {
+    // Filter hooks based on the process name
+    let hooks_config = load_hooks_config().unwrap();
+    hooks_config
+        .hooks
+        .into_iter()
+        .filter(|hook| {
+            // we need to check only the end of process_name
+            // eg: 'game.exe' should match 'Z:\\Progrtam Files\\Game\\game.exe'
+            if let Some(target_process) = &hook.target_process {
+                process_name.ends_with(target_process)
+            } else {
+                true
+            }
+        })
+        .collect()
+}
+
 /// Loads the hooks into the game
 #[unsafe(no_mangle)]
 pub extern "C" fn le_lib_load_hook() -> bool {
     // Initialize logger
     crate::initialize_logger();
     info!("Loading hooks from {}", get_hooks_config_path());
-
-    // Load the hooks configuration
-    let hooks_config = match load_hooks_config() {
-        Ok(config) => config,
-        Err(e) => {
-            error!("Failed to load hooks config: {}", e);
-            return false;
-        }
-    };
 
     // Get the active hooks
     let mut active_hooks = match ACTIVE_HOOKS.lock() {
@@ -262,7 +620,15 @@ pub extern "C" fn le_lib_load_hook() -> bool {
     let mut processed_hooks = HashSet::new();
 
     // Process each hook in the configuration
-    for hook in &hooks_config.hooks {
+    let process_name = get_process_name_from_proc();
+    let matching_hooks = get_only_matching_hooks(&process_name);
+
+    if matching_hooks.is_empty() {
+        return false;
+    }
+
+    info!("Processing {} hooks", matching_hooks.len());
+    for hook in &matching_hooks {
         // Skip if hook is already loaded
         if active_hooks.contains_key(&hook.name) {
             info!("Hook '{}' is already loaded", hook.name);
@@ -271,7 +637,7 @@ pub extern "C" fn le_lib_load_hook() -> bool {
         }
 
         // Parse the target address
-        let target_address = match u64::from_str_radix(&hook.target_address, 16) {
+        let target_address = match parse_hex_address(&hook.target_address) {
             Ok(addr) => addr,
             Err(_) => {
                 error!(
@@ -314,9 +680,15 @@ pub extern "C" fn le_lib_load_hook() -> bool {
                 }
             };
 
+        // Get the directory where the asm files were written
+        let base_dir = std::path::Path::new(&trampoline_asm_path)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "/tmp".to_string());
+
         // Compile the assembly code
-        let trampoline_obj_path = format!("/tmp/{}_trampoline.o", hook.name);
-        let jumper_obj_path = format!("/tmp/{}_jumper.o", hook.name);
+        let trampoline_obj_path = format!("{}/{}_trampoline.o", base_dir, hook.name);
+        let jumper_obj_path = format!("{}/{}_jumper.o", base_dir, hook.name);
 
         if let Err(e) = compile_assembly(&trampoline_asm_path, &trampoline_obj_path) {
             error!(
@@ -652,5 +1024,51 @@ _start:
         let _ = fs::remove_file(&trampoline_obj_path);
         let _ = fs::remove_file(&jumper_obj_path);
         let _ = cleanup_test_hooks_config();
+    }
+
+    #[test]
+    fn test_memory_content_to_bytes() {
+        // Test with mixed ASCII and hex escape sequences
+        let mixed_content =
+            "@SUVATAUAWH\\x83\\xec(\\x80=1`-\\x03\\x00M\\x8b\\xe9M\\x8b\\xe0H\\x8b\\xeaH\\x8b";
+        let bytes = memory_content_to_bytes(mixed_content);
+
+        // Expected bytes:
+        // ASCII '@' = 0x40, 'S' = 0x53, 'U' = 0x55, 'V' = 0x56, 'A' = 0x41, 'T' = 0x54, 'A' = 0x41, 'U' = 0x55
+        // ASCII 'A' = 0x41, 'W' = 0x57, 'H' = 0x48, then \x83 = 0x83, \xec = 0xEC, '(' = 0x28, etc.
+        let expected = vec![
+            0x40, 0x53, 0x55, 0x56, 0x41, 0x54, 0x41, 0x55, 0x41, 0x57, 0x48, 0x83, 0xEC, 0x28,
+            0x80, 0x3D, 0x31, 0x60, 0x2D, 0x03, 0x00, 0x4D, 0x8B, 0xE9, 0x4D, 0x8B, 0xE0, 0x48,
+            0x8B, 0xEA, 0x48, 0x8B,
+        ];
+
+        assert_eq!(bytes, expected, "Bytes don't match expected output");
+        println!("Parsed bytes: {:02X?}", bytes);
+
+        // Test with only ASCII content
+        let ascii_only = "Hello, World!";
+        let bytes = memory_content_to_bytes(ascii_only);
+        let expected = vec![
+            0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x2C, 0x20, 0x57, 0x6F, 0x72, 0x6C, 0x64, 0x21,
+        ];
+        assert_eq!(
+            bytes, expected,
+            "ASCII-only bytes don't match expected output"
+        );
+
+        // Test with only hex escapes
+        let hex_only = "\\x48\\x65\\x6C\\x6C\\x6F";
+        let bytes = memory_content_to_bytes(hex_only);
+        let expected = vec![0x48, 0x65, 0x6C, 0x6C, 0x6F];
+        assert_eq!(
+            bytes, expected,
+            "Hex-only bytes don't match expected output"
+        );
+
+        // Test with invalid hex escape sequence
+        let invalid_hex = "Test\\xZZ";
+        let bytes = memory_content_to_bytes(invalid_hex);
+        let expected = vec![0x54, 0x65, 0x73, 0x74, 0x5C, 0x78, 0x5A, 0x5A]; // Should preserve the original characters
+        assert_eq!(bytes, expected, "Invalid hex escape handling is incorrect");
     }
 }
