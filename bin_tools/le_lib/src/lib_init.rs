@@ -27,8 +27,8 @@ lazy_static! {
     pub static ref HOOKS: Mutex<HashMap<String, SendPtr>> = Mutex::new(HashMap::new());
     // Static to store the DLL notification callback
     static ref DLL_NOTIFICATION_CALLBACK: Mutex<Option<DllNotificationCallback>> = Mutex::new(None);
-    // Flag to indicate if we should bypass Wine hooks
-    pub static ref BYPASS_WINE_HOOKS: Mutex<bool> = Mutex::new(false);
+    // Flag to indicate if we should hook mmap calls (default: false)
+    pub static ref HOOK_MMAP_CALL: Mutex<bool> = Mutex::new(false);
 }
 
 // Static to ensure we only initialize once

@@ -1,3 +1,4 @@
+use crate::lib_init::HOOK_MMAP_CALL;
 use crate::lib_init::notify_dll_loaded;
 use lazy_static::lazy_static;
 use log::{debug, error, info};
@@ -29,13 +30,11 @@ lazy_static! {
     static ref HOOK_INITIALIZED: Once = Once::new();
     static ref LAST_SCAN_TIME: Mutex<Instant> = Mutex::new(Instant::now());
     static ref KNOWN_MODULES: Mutex<HashSet<String>> = Mutex::new(HashSet::new());
+    static ref CALLS_COUNTER: Mutex<u64> = Mutex::new(0);
 }
 
 // Interval between memory map scans (in milliseconds)
 const SCAN_INTERVAL_MS: u64 = 5000;
-lazy_static! {
-    static ref CALLS_COUNTER: Mutex<u64> = Mutex::new(0);
-}
 
 // Hook for mmap syscall
 #[unsafe(no_mangle)]
@@ -48,21 +47,26 @@ pub unsafe extern "C" fn mmap(
     offset: c_long,
 ) -> *mut c_void {
     // Call the original mmap function
-    let result = if let Some(original_func) = *ORIGINAL_MMAP.lock().unwrap() {
-        unsafe { original_func(addr, length, prot, flags, fd, offset) }
-    } else {
-        error!("Original mmap function not found");
-        return std::ptr::null_mut();
+    let guard = ORIGINAL_MMAP.lock().unwrap();
+    let result = match *guard {
+        Some(original_fn) => unsafe { original_fn(addr, length, prot, flags, fd, offset) },
+        None => {
+            error!("Original mmap function not found");
+            return std::ptr::null_mut();
+        }
     };
 
+    // If HOOK_MMAP_CALL is disabled, just return the result without processing
+    if !*HOOK_MMAP_CALL.lock().unwrap() {
+        return result;
+    }
+
     // Increment the call counter
-    let mut counter = CALLS_COUNTER.lock().unwrap();
-    *counter += 1;
+    *CALLS_COUNTER.lock().unwrap() += 1;
 
     // If memory was mapped with executable permission, scan for new modules
     if !result.is_null() && (prot & PROT_EXEC) != 0 && (prot & PROT_READ) != 0 {
         debug!("Executable memory mapped - checking for new modules");
-        debug!("Current mmap call count: {}", *counter);
 
         // Rate limit scanning to avoid excessive I/O
         let mut last_scan_time = LAST_SCAN_TIME.lock().unwrap();
@@ -70,9 +74,7 @@ pub unsafe extern "C" fn mmap(
         if now.duration_since(*last_scan_time) > Duration::from_millis(SCAN_INTERVAL_MS) {
             *last_scan_time = now;
             // Scan in a separate thread to avoid blocking the main thread
-            std::thread::spawn(|| {
-                scan_proc_maps();
-            });
+            std::thread::spawn(scan_proc_maps);
         }
     }
 
@@ -89,76 +91,92 @@ fn scan_proc_maps() {
         return;
     }
 
-    match File::open(&maps_path) {
-        Ok(file) => {
-            let reader = BufReader::new(file);
-            let mut known_modules = KNOWN_MODULES.lock().unwrap();
-
-            for line in reader.lines() {
-                if let Ok(content) = line {
-                    // Parse the memory mapping line
-                    // Format: address perms offset dev inode pathname
-                    // Example: 7f9d80617000-7f9d80619000 r-xp 00000000 08:01 2097666 /lib/x86_64-linux-gnu/ld-2.31.so
-
-                    // Split the line by spaces
-                    let parts: Vec<&str> = content.split_whitespace().collect();
-                    if parts.len() < 6 {
-                        // No path in this line
-                        continue;
-                    }
-
-                    // Get address range (first column)
-                    let addr_range = parts[0];
-
-                    // The path starts from the 6th column (index 5)
-                    // If there are more than 6 parts, then the path contains spaces
-                    // and we need to rejoin those parts
-                    let path = if parts.len() > 6 {
-                        // Join the path parts (everything from index 5 onwards)
-                        parts[5..].join(" ")
-                    } else {
-                        parts[5].to_string()
-                    };
-
-                    // Skip entries that don't have real paths
-                    if path.is_empty() || path.starts_with('[') || path.contains("SYSV") {
-                        continue;
-                    }
-
-                    // Only consider Wine/Proton DLLs or potentially loaded game DLLs
-                    if (path.contains(".dll") || path.contains(".so") || path.contains(".exe"))
-                        && !known_modules.contains(&path)
-                    {
-                        // Add to known modules
-                        known_modules.insert(path.to_string());
-
-                        info!("Detected new module: {}", path);
-                        let count = CALLS_COUNTER.lock().unwrap();
-                        info!("Total mmap calls: {}", *count);
-
-                        // Extract the base module name from path
-                        let base_name = Path::new(&path)
-                            .file_name()
-                            .and_then(|name| name.to_str())
-                            .unwrap_or(&path);
-
-                        // Get the memory region from the mapping line
-                        let addr_parts: Vec<&str> = addr_range.split('-').collect();
-                        if addr_parts.len() == 2 {
-                            if let Ok(addr) = usize::from_str_radix(addr_parts[0], 16) {
-                                // The base address where the module is loaded
-                                let module_addr = addr as *mut c_void;
-                                notify_dll_loaded(base_name, module_addr);
-                            }
-                        }
-                    }
-                }
-            }
-        }
+    let file = match File::open(&maps_path) {
+        Ok(f) => f,
         Err(e) => {
             error!("Failed to open {}: {}", maps_path, e);
+            return;
+        }
+    };
+
+    let reader = BufReader::new(file);
+    let mut known_modules = KNOWN_MODULES.lock().unwrap();
+
+    for line in reader.lines().filter_map(Result::ok) {
+        if let Some((addr_range, path)) = parse_maps_line(&line) {
+            // Skip entries that don't have real paths
+            if path.is_empty() || path.starts_with('[') || path.contains("SYSV") {
+                continue;
+            }
+
+            process_module(&path, addr_range, &mut known_modules);
         }
     }
+}
+
+// Parse a single line from /proc/<pid>/maps
+fn parse_maps_line(content: &str) -> Option<(&str, String)> {
+    // Format: address perms offset dev inode pathname
+    // Example: 7f9d80617000-7f9d80619000 r-xp 00000000 08:01 2097666 /lib/x86_64-linux-gnu/ld-2.31.so
+    let parts: Vec<&str> = content.split_whitespace().collect();
+    if parts.len() < 6 {
+        // No path in this line
+        return None;
+    }
+
+    // Get address range (first column)
+    let addr_range = parts[0];
+
+    // The path starts from the 6th column (index 5)
+    // If there are more than 6 parts, then the path contains spaces
+    let path = if parts.len() > 6 {
+        parts[5..].join(" ")
+    } else {
+        parts[5].to_string()
+    };
+
+    Some((addr_range, path))
+}
+
+// Process a module found in memory maps
+fn process_module(path: &str, addr_range: &str, known_modules: &mut HashSet<String>) {
+    // Only consider Wine/Proton DLLs or potentially loaded game DLLs
+    if !is_target_module(path) || known_modules.contains(path) {
+        return;
+    }
+
+    // Add to known modules
+    known_modules.insert(path.to_string());
+
+    info!("Detected new module: {}", path);
+    info!("Total mmap calls: {}", *CALLS_COUNTER.lock().unwrap());
+
+    // Extract the base module name from path
+    let base_name = Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(path);
+
+    // Get the base address from the memory mapping
+    if let Some(addr) = parse_address(addr_range) {
+        notify_dll_loaded(base_name, addr);
+    }
+}
+
+// Check if the module is a target we want to track
+fn is_target_module(path: &str) -> bool {
+    path.contains(".dll") || path.contains(".so") || path.contains(".exe")
+}
+
+// Parse a memory address from the address range string
+fn parse_address(addr_range: &str) -> Option<*mut c_void> {
+    let addr_parts: Vec<&str> = addr_range.split('-').collect();
+    if addr_parts.len() == 2 {
+        if let Ok(addr) = usize::from_str_radix(addr_parts[0], 16) {
+            return Some(addr as *mut c_void);
+        }
+    }
+    None
 }
 
 // Function to scan loaded modules at startup
@@ -191,30 +209,65 @@ fn hook_mmap_syscall() -> bool {
 
 // Initialize the hooks
 pub fn initialize_wine_hooks() -> bool {
-    use crate::lib_init::BYPASS_WINE_HOOKS;
+    use std::env;
 
-    // Check if hooks are bypassed
-    if *BYPASS_WINE_HOOKS.lock().unwrap() {
-        info!("Wine hooks are bypassed. Skipping initialization.");
-        return true; // Return success to prevent error in lib_init
-    }
+    // Check environment variable for HOOK_MMAP_CALL setting
+    let hook_mmap = env::var("HOOK_MMAP_CALL")
+        .map(|v| v == "1" || v.to_lowercase() == "true")
+        .unwrap_or(false);
 
+    // Store the setting in our global variable
+    *HOOK_MMAP_CALL.lock().unwrap() = hook_mmap;
+
+    info!("Initializing mmap syscall hook.");
     let mut success = false;
 
     HOOK_INITIALIZED.call_once(|| {
-        info!("Initializing Linux syscall hooks for memory mappings");
-
         // Hook the mmap syscall
         success = hook_mmap_syscall();
 
         if success {
             info!("Linux memory mapping hooks initialized successfully");
-            // Perform an initial scan to identify already-loaded modules
-            scan_loaded_modules();
+            if hook_mmap {
+                info!("HOOK_MMAP_CALL is enabled. Scanning for loaded modules.");
+                scan_loaded_modules();
+            }
         } else {
             error!("Failed to initialize Linux memory mapping hooks");
         }
     });
 
+    if !hook_mmap {
+        info!("HOOK_MMAP_CALL is disabled (default). Starting periodic module scanner.");
+        start_module_scanner();
+    } else {
+        info!("HOOK_MMAP_CALL is enabled. No periodic scanner started.");
+    }
+
     success
+}
+
+// Start a background thread to periodically scan for loaded modules
+fn start_module_scanner() {
+    info!(
+        "Starting periodic module scanner with interval of {}ms",
+        SCAN_INTERVAL_MS
+    );
+
+    // Perform an initial scan immediately
+    scan_loaded_modules();
+
+    // Start background thread for periodic scanning
+    std::thread::spawn(move || {
+        loop {
+            // Sleep for the scan interval
+            std::thread::sleep(Duration::from_millis(SCAN_INTERVAL_MS));
+
+            // Scan for new modules
+            debug!("Periodic scan for loaded modules");
+            scan_proc_maps();
+        }
+    });
+
+    info!("Module scanner thread started successfully");
 }
