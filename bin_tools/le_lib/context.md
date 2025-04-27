@@ -20,10 +20,13 @@ Hooks are defined in yaml file with following structure:
 ```yaml
 hooks:
   - name: hook_name
-    target_address: 
+    target_address: 0x6ffff84e20d0
     # whe check memory content before modifying it
     memory_content: '@SUVATAUAWH\x83\xec(\x80=1`-\x03\x00M\x8b\xe9M\x8b\xe0H\x8b\xeaH\x8b'
     hook_function: le_lib_echo
+    # file to be loaded in maps before we're trying to load the hook
+    # if it is not defined, we will wait for the address to be loaded
+    wait_for_file: '/home/kpi/games/SteamLibrary/steamapps/common/Last Epoch/GameAssembly.dll'
 ```
 
 TODO:

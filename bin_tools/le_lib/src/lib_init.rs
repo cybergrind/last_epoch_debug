@@ -8,9 +8,9 @@ use std::os::raw::{c_char, c_void};
 use std::sync::{Mutex, Once};
 
 // local imports
+use crate::echo::le_lib_echo;
 use crate::initialize_logger;
 use crate::wine_hooks::initialize_wine_hooks;
-use crate::echo::le_lib_echo;
 
 // Type for hook function pointers
 type HookFunctionPtr = *const c_void;

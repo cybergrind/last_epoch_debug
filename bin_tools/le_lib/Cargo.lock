@@ -241,6 +241,8 @@ dependencies = [
  "libc",
  "log",
  "log4rs",
+ "serde",
+ "serde_yaml",
  "shellexpand",
 ]
 

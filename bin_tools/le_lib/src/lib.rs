@@ -2,11 +2,13 @@ use log::{LevelFilter, info};
 use std::sync::Once;
 
 pub use echo::le_lib_echo;
+pub use hook_tools::{le_lib_load_hook, le_lib_unload_hook};
 pub use lib_init::le_lib_init;
 
 // Declare modules
 pub mod constants;
 pub mod echo;
+pub mod hook_tools;
 pub mod lib_init;
 pub mod wine_hooks;
 
