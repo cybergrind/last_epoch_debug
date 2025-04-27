@@ -8,6 +8,7 @@ pub use lib_init::le_lib_init;
 pub mod constants;
 pub mod echo;
 pub mod lib_init;
+pub mod wine_hooks;
 
 static INIT: Once = Once::new();
 

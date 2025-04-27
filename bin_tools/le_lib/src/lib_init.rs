@@ -1,13 +1,15 @@
-use std::collections::HashMap;
-use std::sync::{Mutex, Once};
-use log::{info, warn, error};
 use lazy_static::lazy_static;
+use log::{error, info, warn};
+use std::collections::HashMap;
 use std::ffi::CStr;
-use std::os::raw::{c_char, c_void};
 use std::marker::Send;
+use std::os::raw::{c_char, c_void};
+use std::sync::{Mutex, Once};
 
 // Import the logger initialization function
 use crate::initialize_logger;
+// Import the wine hooks initialization function
+use crate::wine_hooks::initialize_wine_hooks;
 
 // Type for hook function pointers
 type HookFunctionPtr = *const c_void;
@@ -30,10 +32,10 @@ lazy_static! {
 static INIT: Once = Once::new();
 
 // DLL load notification callback type
-type DllNotificationCallback = unsafe extern "C" fn(dll_path: *const c_char, base_address: *const c_void);
+type DllNotificationCallback =
+    unsafe extern "C" fn(dll_path: *const c_char, base_address: *const c_void);
 
 // Implementation of register_dll_notification function
-// Instead of linking to an external function, we'll implement it ourselves
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn register_dll_notification(callback: DllNotificationCallback) -> bool {
     match DLL_NOTIFICATION_CALLBACK.lock() {
@@ -41,7 +43,7 @@ pub unsafe extern "C" fn register_dll_notification(callback: DllNotificationCall
             *cb_guard = Some(callback);
             info!("DLL notification callback registered");
             true
-        },
+        }
         Err(e) => {
             error!("Failed to register DLL notification callback: {}", e);
             false
@@ -52,7 +54,7 @@ pub unsafe extern "C" fn register_dll_notification(callback: DllNotificationCall
 // Helper function to simulate DLL loading (can be called from other parts of your code)
 pub fn notify_dll_loaded(dll_path: &str, base_address: *const c_void) {
     let c_dll_path = std::ffi::CString::new(dll_path).unwrap();
-    
+
     if let Ok(cb_guard) = DLL_NOTIFICATION_CALLBACK.lock() {
         if let Some(callback) = *cb_guard {
             unsafe {
@@ -73,7 +75,7 @@ unsafe extern "C" fn dll_loaded_callback(dll_path: *const c_char, base_address: 
         match CStr::from_ptr(dll_path).to_str() {
             Ok(path) => {
                 info!("DLL loaded: {} at address {:p}", path, base_address);
-            },
+            }
             Err(e) => {
                 error!("Error converting DLL path to string: {}", e);
             }
@@ -85,7 +87,10 @@ unsafe extern "C" fn dll_loaded_callback(dll_path: *const c_char, base_address: 
 /// Perfect for LD_PRELOAD usage as it ensures our initialization happens before any other code runs
 #[unsafe(no_mangle)]
 #[used]
-#[cfg_attr(any(target_os = "linux", target_os = "android"), unsafe(link_section = ".init_array"))]
+#[cfg_attr(
+    any(target_os = "linux", target_os = "android"),
+    unsafe(link_section = ".init_array")
+)]
 pub static __LE_LIB_CONSTRUCTOR: extern "C" fn() = {
     extern "C" fn constructor() {
         // We must initialize logger directly here because the info! call needs it
@@ -97,15 +102,16 @@ pub static __LE_LIB_CONSTRUCTOR: extern "C" fn() = {
 };
 
 /// Initialize the library
-/// 
+///
 /// This function:
 /// 1. Initializes the logger
 /// 2. Sets up hook that will log after DLL is loaded in memory
 /// 3. Initializes global hashmap for hooks
+/// 4. Initializes Wine DLL loading hooks
 #[unsafe(no_mangle)]
 pub extern "C" fn le_lib_init() -> bool {
     let mut success = true;
-    
+
     INIT.call_once(|| {
         // Initialize logger
         initialize_logger();
@@ -113,14 +119,25 @@ pub extern "C" fn le_lib_init() -> bool {
 
         // Initialize hooks hashmap (already done via lazy_static)
         info!("le_lib_init: Hooks hashmap initialized");
-        
+
         // Set up DLL load notification
         match unsafe { register_dll_notification(dll_loaded_callback) } {
             true => {
                 info!("le_lib_init: DLL load notification hook registered successfully");
-            },
+            }
             false => {
                 error!("le_lib_init: Failed to register DLL load notification hook");
+                success = false;
+            }
+        }
+
+        // Initialize Wine hooks
+        match initialize_wine_hooks() {
+            true => {
+                info!("le_lib_init: Wine DLL loading hooks initialized successfully");
+            }
+            false => {
+                error!("le_lib_init: Failed to initialize Wine DLL loading hooks");
                 success = false;
             }
         }
@@ -151,7 +168,7 @@ pub fn register_hook(name: &str, function_ptr: HookFunctionPtr) -> bool {
 
     hooks.insert(name.to_string(), SendPtr(function_ptr));
     info!("Hook '{}' registered at address {:p}", name, function_ptr);
-    
+
     true
 }
 

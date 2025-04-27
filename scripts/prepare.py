@@ -10,7 +10,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-from ls_tools.const import LOG_FORMAT
+from le_tools.const import LOG_FORMAT
 
 
 logging.basicConfig(level=logging.DEBUG, format=LOG_FORMAT)
