@@ -3,18 +3,21 @@
         "/game_folder/": true,
         "/Filters/": true,
         "/Metadata/": true,
-        "/wine_dir/": true
+        "/wine_dir/": true,
+        "/external/": true
     },
     "files.exclude": {
         "Filters/": true,
         "game_folder/": true,
         "Metadata/": true,
-        "wine_dir/": true
+        "wine_dir/": true,
+        "external/": true
     },
     "files.watcherExclude": {
         "/game_folder": true,
         "/Filters": true,
         "/Metadata": true,
-        "/wine_dir": true
+        "/wine_dir": true,
+        "/external": true
     }
 }

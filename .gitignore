@@ -4,5 +4,7 @@ Metadata
 wine_dir
 Il2CppDumper*
 editor/
+/external/
 
 /wine_custom/.envrc.proton
+/.envrc.local

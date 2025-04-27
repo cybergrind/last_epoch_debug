@@ -5,6 +5,7 @@
         "Metadata",
         "wine_dir",
         "editor",
-        "Il2CppDumper*"
+        "Il2CppDumper*",
+        "external"
     ]
 }

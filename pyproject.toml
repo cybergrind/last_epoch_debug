@@ -7,17 +7,26 @@ license = { text = 'Apache-2.0' }
 requires-python = '>=3.13'
 dependencies = [
   'ipython',
+  "pydantic-settings>=2.9.1",
 ]
+
+[project.scripts]
+prepare = "scripts.prepare:main"
 
 # installed with: uv sync
 [dependency-groups]
-dev = ['ruff', 'pre-commit>=4.1.0', 'uv>=0.6.1']
+dev = [
+    'ruff',
+ 'pre-commit>=4.1.0',
+ 'uv>=0.6.1',
+ "pytest>=8.3.5",
+]
 
 [tool.ruff]
 line-length = 100
 target-version = 'py313'
 indent-width = 4
-exclude = ['.venv', '.git']
+exclude = ['.venv', '.git', 'external']
 
 [tool.ruff.format]
 quote-style = 'single'
