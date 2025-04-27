@@ -1,0 +1,12 @@
+[package]
+name = "le_lib"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+log = "0.4.27"
+log4rs = "1.2.0"
+
+[lib]
+name = "le_lib"
+crate-type = ["cdylib"]

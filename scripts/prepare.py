@@ -10,8 +10,10 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
+from ls_tools.const import LOG_FORMAT
 
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
+
+logging.basicConfig(level=logging.DEBUG, format=LOG_FORMAT)
 log = logging.getLogger('prepare')
 
 # Constants
