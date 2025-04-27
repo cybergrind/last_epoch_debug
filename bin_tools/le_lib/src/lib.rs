@@ -1,26 +1,30 @@
-use log::{info, LevelFilter};
+use log::{LevelFilter, info};
 use std::sync::Once;
 
 pub use echo::le_lib_echo;
 
-// Declare the echo module
+// Declare modules
+pub mod constants;
 pub mod echo;
 
 static INIT: Once = Once::new();
 
 pub fn initialize_logger() {
     INIT.call_once(|| {
-        let log_path = "/tmp/le_lib.log";
         let config = log4rs::append::file::FileAppender::builder()
-            .encoder(Box::new(log4rs::encode::pattern::PatternEncoder::new("{d} {l} {t} - {m}{n}")))
-            .build(log_path)
+            .encoder(Box::new(log4rs::encode::pattern::PatternEncoder::new(
+                constants::LOG_PATTERN,
+            )))
+            .build(constants::LOG_FILE_PATH)
             .unwrap();
 
         let config = log4rs::config::Config::builder()
             .appender(log4rs::config::Appender::builder().build("file", Box::new(config)))
-            .build(log4rs::config::Root::builder()
-                .appender("file")
-                .build(LevelFilter::Info))
+            .build(
+                log4rs::config::Root::builder()
+                    .appender("file")
+                    .build(LevelFilter::Info),
+            )
             .unwrap();
 
         log4rs::init_config(config).expect("Failed to initialize logger");

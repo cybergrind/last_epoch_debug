@@ -3,7 +3,7 @@ It is used for games that runs on linux with proton or wine.
 
 Rust code style:
 
-* use new module style (do not use `mod.rs` file in the nested directory, just create file in the root of the module)
+* IMPORTANT: use new module style (do not use `mod.rs` file in the nested directory, just create file in the root of the module)
 * use `#[unsafe(no_mangle)]` where required
 
 There are following functions:
