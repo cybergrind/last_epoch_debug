@@ -15,9 +15,7 @@ def parse_args():
 
 
 def main():
-    args = parse_args()
-
+    args = parse_args()  # noqa
 
     if __name__ == '__main__':
         main()
-

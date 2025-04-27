@@ -3,8 +3,6 @@ import argparse
 import logging
 import os
 import subprocess
-import sys
-import time
 from pathlib import Path
 
 
@@ -31,8 +29,6 @@ def detect_running_proton():
     pass
 
 
-
-
 def get_wpid(linux_pid):
     """
     Get the Windows PID of a process running in Proton.
@@ -43,17 +39,16 @@ def get_wpid(linux_pid):
     try:
         result = subprocess.run(['proton', 'wpid', str(linux_pid)], capture_output=True, text=True)
         if result.returncode != 0:
-            log.error(f"Failed to get Windows PID for Linux PID {linux_pid}: {result.stderr}")
+            log.error(f'Failed to get Windows PID for Linux PID {linux_pid}: {result.stderr}')
             return None
         return int(result.stdout.strip())
     except Exception as e:
-        log.error(f"Error getting Windows PID: {e}")
+        log.error(f'Error getting Windows PID: {e}')
         return None
 
 
-COMMANDS = {
-    'get-wpid'
-}
+COMMANDS = {'get-wpid'}
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description='DESCRIPTION')
@@ -66,10 +61,8 @@ def parse_args():
 
 
 def main():
-    args = parse_args()
+    args = parse_args()  # noqa
 
 
 if __name__ == '__main__':
     main()
-
-
