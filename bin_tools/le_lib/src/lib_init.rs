@@ -7,10 +7,10 @@ use std::marker::Send;
 use std::os::raw::{c_char, c_void};
 use std::sync::{Mutex, Once};
 
-// Import the logger initialization function
+// local imports
 use crate::initialize_logger;
-// Import the wine hooks initialization function
 use crate::wine_hooks::initialize_wine_hooks;
+use crate::echo::le_lib_echo;
 
 // Type for hook function pointers
 type HookFunctionPtr = *const c_void;
@@ -153,6 +153,14 @@ pub extern "C" fn le_lib_init() -> bool {
                     success = false;
                 }
             }
+        }
+
+        // register hook `le_lib_echo`
+        if !register_hook("le_lib_echo", le_lib_echo as HookFunctionPtr) {
+            error!("le_lib_init: Failed to register le_lib_echo hook");
+            success = false;
+        } else {
+            info!("le_lib_init: le_lib_echo hook registered successfully");
         }
 
         if success {

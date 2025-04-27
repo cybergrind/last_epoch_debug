@@ -20,22 +20,14 @@ Hooks are defined in yaml file with following structure:
 ```yaml
 hooks:
   - name: hook_name
-    target_address: 0x12345678
+    target_address: 
     # whe check memory content before modifying it
-    memory_content: '\x95\xec\x00\xc0\x00\x00\x00\x00\x17+\x01\xc0\x00\x00\x00\x00'
-    hook_function: target_function_name
+    memory_content: '@SUVATAUAWH\x83\xec(\x80=1`-\x03\x00M\x8b\xe9M\x8b\xe0H\x8b\xeaH\x8b'
+    hook_function: le_lib_echo
 ```
 
 TODO:
-* add module `le_lib_init`:
-  - initialized logger
-  - setup hook that will log after dll is loaded in memory with dll name
-  - initialize global hashmap for hooks:
-    - key: hook name
-    - value: hook function address
-  - use env variable 'WINEPREFIX' to get path to the libraries or use default path `~/.wine`
-
-* add module for hooks functions:
+* add module for hooks functions `hook_tools.rs` with following functions:
   - `le_lib_load_hook` - loads the hook into the game
   - `le_lib_unload_hook` - unloads the hook from the game
 * `le_lib_load_hook` details:
@@ -44,7 +36,7 @@ TODO:
     - check if hook is already loaded
     - if not, load it and log
     - get address for target function
-    - complile two small assembly functions:
+    - compile two small assembly functions:
       - first will:
         - save registers information
         - call hook_function
