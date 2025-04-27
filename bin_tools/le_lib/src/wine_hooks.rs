@@ -32,7 +32,10 @@ lazy_static! {
 }
 
 // Interval between memory map scans (in milliseconds)
-const SCAN_INTERVAL_MS: u64 = 500;
+const SCAN_INTERVAL_MS: u64 = 5000;
+lazy_static! {
+    static ref CALLS_COUNTER: Mutex<u64> = Mutex::new(0);
+}
 
 // Hook for mmap syscall
 #[unsafe(no_mangle)]
@@ -52,10 +55,15 @@ pub unsafe extern "C" fn mmap(
         return std::ptr::null_mut();
     };
 
+    // Increment the call counter
+    let mut counter = CALLS_COUNTER.lock().unwrap();
+    *counter += 1;
+
     // If memory was mapped with executable permission, scan for new modules
     if !result.is_null() && (prot & PROT_EXEC) != 0 && (prot & PROT_READ) != 0 {
         debug!("Executable memory mapped - checking for new modules");
-        
+        debug!("Current mmap call count: {}", *counter);
+
         // Rate limit scanning to avoid excessive I/O
         let mut last_scan_time = LAST_SCAN_TIME.lock().unwrap();
         let now = Instant::now();
@@ -75,60 +83,78 @@ pub unsafe extern "C" fn mmap(
 fn scan_proc_maps() {
     let pid = std::process::id();
     let maps_path = format!("/proc/{}/maps", pid);
-    
+
     if !Path::new(&maps_path).exists() {
         error!("Could not find process maps at {}", maps_path);
         return;
     }
-    
+
     match File::open(&maps_path) {
         Ok(file) => {
             let reader = BufReader::new(file);
             let mut known_modules = KNOWN_MODULES.lock().unwrap();
-            
+
             for line in reader.lines() {
                 if let Ok(content) = line {
                     // Parse the memory mapping line
                     // Format: address perms offset dev inode pathname
                     // Example: 7f9d80617000-7f9d80619000 r-xp 00000000 08:01 2097666 /lib/x86_64-linux-gnu/ld-2.31.so
-                    
+
+                    // Split the line by spaces
                     let parts: Vec<&str> = content.split_whitespace().collect();
-                    if parts.len() >= 6 {
-                        // Check if the last part is a path (not [heap], [stack], etc.)
-                        let last_part = parts.last().unwrap();
-                        if !last_part.starts_with('[') && !last_part.contains("SYSV") {
-                            let path = last_part;
-                            
-                            // Only consider Wine/Proton DLLs or potentially loaded game DLLs
-                            if (path.contains(".dll") || path.contains(".so") || path.contains(".exe")) &&
-                               !known_modules.contains(&path.to_string()) {
-                                
-                                // Add to known modules
-                                known_modules.insert(path.to_string());
-                                
-                                info!("Detected new module: {}", path);
-                                
-                                // Extract the base module name from path
-                                let base_name = Path::new(path).file_name()
-                                    .and_then(|name| name.to_str())
-                                    .unwrap_or(path);
-                                
-                                // Get the memory region from the mapping line
-                                let addr_range = parts[0];
-                                let addr_parts: Vec<&str> = addr_range.split('-').collect();
-                                if addr_parts.len() == 2 {
-                                    if let Ok(addr) = usize::from_str_radix(addr_parts[0], 16) {
-                                        // The base address where the module is loaded
-                                        let module_addr = addr as *mut c_void;
-                                        notify_dll_loaded(base_name, module_addr);
-                                    }
-                                }
+                    if parts.len() < 6 {
+                        // No path in this line
+                        continue;
+                    }
+
+                    // Get address range (first column)
+                    let addr_range = parts[0];
+
+                    // The path starts from the 6th column (index 5)
+                    // If there are more than 6 parts, then the path contains spaces
+                    // and we need to rejoin those parts
+                    let path = if parts.len() > 6 {
+                        // Join the path parts (everything from index 5 onwards)
+                        parts[5..].join(" ")
+                    } else {
+                        parts[5].to_string()
+                    };
+
+                    // Skip entries that don't have real paths
+                    if path.is_empty() || path.starts_with('[') || path.contains("SYSV") {
+                        continue;
+                    }
+
+                    // Only consider Wine/Proton DLLs or potentially loaded game DLLs
+                    if (path.contains(".dll") || path.contains(".so") || path.contains(".exe"))
+                        && !known_modules.contains(&path)
+                    {
+                        // Add to known modules
+                        known_modules.insert(path.to_string());
+
+                        info!("Detected new module: {}", path);
+                        let count = CALLS_COUNTER.lock().unwrap();
+                        info!("Total mmap calls: {}", *count);
+
+                        // Extract the base module name from path
+                        let base_name = Path::new(&path)
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or(&path);
+
+                        // Get the memory region from the mapping line
+                        let addr_parts: Vec<&str> = addr_range.split('-').collect();
+                        if addr_parts.len() == 2 {
+                            if let Ok(addr) = usize::from_str_radix(addr_parts[0], 16) {
+                                // The base address where the module is loaded
+                                let module_addr = addr as *mut c_void;
+                                notify_dll_loaded(base_name, module_addr);
                             }
                         }
                     }
                 }
             }
-        },
+        }
         Err(e) => {
             error!("Failed to open {}: {}", maps_path, e);
         }
@@ -146,11 +172,11 @@ fn hook_mmap_syscall() -> bool {
     // On Linux, we'll use libcall to hook the mmap system call
     // This is a simplified placeholder - in a real implementation,
     // you would need a library like `frida-gum` or similar to hook syscalls
-    
+
     unsafe {
         // Get the original mmap function from libc
         let func_ptr = libc::dlsym(libc::RTLD_NEXT, "mmap\0".as_ptr() as *const c_char);
-        
+
         if func_ptr.is_null() {
             error!("Failed to find original mmap function");
             false
