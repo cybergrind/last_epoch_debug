@@ -56,4 +56,8 @@ TODO:
 cargo build
 
 LD_PRELOAD=$(pwd)/target/debug/lible_lib.so $WINELOADER cmd /c exit
+
+
+# test are only single threaded for now
+cargo test -- --test-threads=1
 ```

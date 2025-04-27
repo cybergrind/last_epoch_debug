@@ -7,7 +7,7 @@ use std::fs;
 use std::process::Command;
 use std::sync::Mutex;
 
-use crate::constants::HOOKS_CONFIG_PATH;
+use crate::constants::get_hooks_config_path;
 
 // Structure to represent a hook configuration
 #[derive(Debug, Deserialize, Serialize)]
@@ -42,7 +42,7 @@ lazy_static! {
 
 /// Loads hooks from the specified YAML configuration file
 fn load_hooks_config() -> Result<HooksConfig, String> {
-    match fs::read_to_string(HOOKS_CONFIG_PATH) {
+    match fs::read_to_string(get_hooks_config_path()) {
         Ok(yaml_content) => match serde_yaml::from_str::<HooksConfig>(&yaml_content) {
             Ok(config) => Ok(config),
             Err(e) => Err(format!("Failed to parse hooks YAML: {}", e)),
@@ -238,7 +238,7 @@ unsafe fn inject_hook(
 pub extern "C" fn le_lib_load_hook() -> bool {
     // Initialize logger
     crate::initialize_logger();
-    info!("Loading hooks from {}", HOOKS_CONFIG_PATH);
+    info!("Loading hooks from {}", get_hooks_config_path());
 
     // Load the hooks configuration
     let hooks_config = match load_hooks_config() {
@@ -406,15 +406,15 @@ hooks:
 "#;
 
         // Write the test yaml to the hooks config path
-        let mut file = fs::File::create(HOOKS_CONFIG_PATH)?;
+        let mut file = fs::File::create(get_hooks_config_path())?;
         file.write_all(test_yaml.as_bytes())?;
         Ok(())
     }
 
     // Clean up the test hooks configuration file
     fn cleanup_test_hooks_config() -> std::io::Result<()> {
-        if Path::new(HOOKS_CONFIG_PATH).exists() {
-            fs::remove_file(HOOKS_CONFIG_PATH)?;
+        if Path::new(&get_hooks_config_path()).exists() {
+            fs::remove_file(get_hooks_config_path())?;
         }
         Ok(())
     }
