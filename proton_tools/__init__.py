@@ -3,12 +3,13 @@ import logging
 import os
 import sys
 from pathlib import Path
+from le_tools.config import config
 
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
 log = logging.getLogger('run_in_proton')
 PROTON_PATH = None
-CUSTOM_DIRENV_PATH = 'wine_custom/.envrc.proton'
+CUSTOM_DIRENV_PATH = config.EXTERNAL_DIR / 'wine_custom/.envrc.proton'
 
 
 def get_proton_env(linux_pid):
