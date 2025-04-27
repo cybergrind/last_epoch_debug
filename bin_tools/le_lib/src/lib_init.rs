@@ -22,6 +22,8 @@ unsafe impl Sync for SendPtr {}
 // Global hashmap for storing hooks
 lazy_static! {
     pub static ref HOOKS: Mutex<HashMap<String, SendPtr>> = Mutex::new(HashMap::new());
+    // Static to store the DLL notification callback
+    static ref DLL_NOTIFICATION_CALLBACK: Mutex<Option<DllNotificationCallback>> = Mutex::new(None);
 }
 
 // Static to ensure we only initialize once
@@ -30,10 +32,34 @@ static INIT: Once = Once::new();
 // DLL load notification callback type
 type DllNotificationCallback = unsafe extern "C" fn(dll_path: *const c_char, base_address: *const c_void);
 
-// Function to register for DLL notifications - this would normally link to a system function
-// For Linux with Wine/Proton, we'll need to use a specific approach for hook injection
-unsafe extern "C" {
-    fn register_dll_notification(callback: DllNotificationCallback) -> bool;
+// Implementation of register_dll_notification function
+// Instead of linking to an external function, we'll implement it ourselves
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn register_dll_notification(callback: DllNotificationCallback) -> bool {
+    match DLL_NOTIFICATION_CALLBACK.lock() {
+        Ok(mut cb_guard) => {
+            *cb_guard = Some(callback);
+            info!("DLL notification callback registered");
+            true
+        },
+        Err(e) => {
+            error!("Failed to register DLL notification callback: {}", e);
+            false
+        }
+    }
+}
+
+// Helper function to simulate DLL loading (can be called from other parts of your code)
+pub fn notify_dll_loaded(dll_path: &str, base_address: *const c_void) {
+    let c_dll_path = std::ffi::CString::new(dll_path).unwrap();
+    
+    if let Ok(cb_guard) = DLL_NOTIFICATION_CALLBACK.lock() {
+        if let Some(callback) = *cb_guard {
+            unsafe {
+                callback(c_dll_path.as_ptr(), base_address);
+            }
+        }
+    }
 }
 
 // DLL load notification callback
@@ -54,6 +80,21 @@ unsafe extern "C" fn dll_loaded_callback(dll_path: *const c_char, base_address: 
         }
     }
 }
+
+/// Constructor attribute - This function will be called automatically when the library is loaded
+/// Perfect for LD_PRELOAD usage as it ensures our initialization happens before any other code runs
+#[unsafe(no_mangle)]
+#[used]
+#[cfg_attr(any(target_os = "linux", target_os = "android"), unsafe(link_section = ".init_array"))]
+pub static __LE_LIB_CONSTRUCTOR: extern "C" fn() = {
+    extern "C" fn constructor() {
+        // We must initialize logger directly here because the info! call needs it
+        initialize_logger();
+        info!("Library loaded - constructor function called");
+        le_lib_init();
+    }
+    constructor
+};
 
 /// Initialize the library
 /// 
