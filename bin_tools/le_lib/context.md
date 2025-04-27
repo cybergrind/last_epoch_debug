@@ -33,6 +33,7 @@ TODO:
   - initialize global hashmap for hooks:
     - key: hook name
     - value: hook function address
+  - use env variable 'WINEPREFIX' to get path to the libraries or use default path `~/.wine`
 
 * add module for hooks functions:
   - `le_lib_load_hook` - loads the hook into the game
@@ -52,3 +53,12 @@ TODO:
       - second will:
         - long jump to first function address
       - use following function to compile: `nasm -o /tmp/<somefile> -f elf64 -l -g -w+all`
+
+
+### Testing
+
+```bash
+cargo build
+
+LD_PRELOAD=$(pwd)/target/debug/lible_lib.so $WINELOADER cmd /c exit
+```

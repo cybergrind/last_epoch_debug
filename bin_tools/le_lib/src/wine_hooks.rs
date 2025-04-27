@@ -1,172 +1,192 @@
-// filepath: /home/kpi/devel/github/last_epoch_debug/bin_tools/le_lib/src/wine_hooks.rs
 use crate::lib_init::notify_dll_loaded;
-use dlopen::raw::Library;
 use lazy_static::lazy_static;
-use log::{error, info};
-use std::ffi::CStr;
-use std::os::raw::{c_char, c_void};
+use log::{debug, error, info};
+use std::collections::HashSet;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::os::raw::{c_char, c_int, c_long, c_void};
+use std::path::Path;
 use std::sync::{Mutex, Once};
+use std::time::{Duration, Instant};
 
-// Define Wine/Windows types
-type HMODULE = *mut c_void;
-type LPCSTR = *const c_char;
+// Define mmap syscall types and constants
+type MmapFunc = unsafe extern "C" fn(
+    addr: *mut c_void,
+    length: usize,
+    prot: c_int,
+    flags: c_int,
+    fd: c_int,
+    offset: c_long,
+) -> *mut c_void;
 
-// Define function types for LoadLibraryA and LoadLibraryW
-type LoadLibraryAFunc = unsafe extern "system" fn(lpLibFileName: LPCSTR) -> HMODULE;
-type LoadLibraryWFunc = unsafe extern "system" fn(lpLibFileName: *const u16) -> HMODULE;
+// Define mmap constants
+const PROT_READ: c_int = 0x1;
+const PROT_EXEC: c_int = 0x4;
 
 // Store original function pointers
 lazy_static! {
-    static ref ORIGINAL_LOADLIBRARYA: Mutex<Option<LoadLibraryAFunc>> = Mutex::new(None);
-    static ref ORIGINAL_LOADLIBRARYW: Mutex<Option<LoadLibraryWFunc>> = Mutex::new(None);
+    static ref ORIGINAL_MMAP: Mutex<Option<MmapFunc>> = Mutex::new(None);
     static ref HOOK_INITIALIZED: Once = Once::new();
+    static ref LAST_SCAN_TIME: Mutex<Instant> = Mutex::new(Instant::now());
+    static ref KNOWN_MODULES: Mutex<HashSet<String>> = Mutex::new(HashSet::new());
 }
 
-// Hook for LoadLibraryA
-#[unsafe(no_mangle)]
-#[allow(non_snake_case)]
-pub unsafe extern "system" fn LoadLibraryA(lpLibFileName: LPCSTR) -> HMODULE {
-    if lpLibFileName.is_null() {
-        if let Some(original_func) = *ORIGINAL_LOADLIBRARYA.lock().unwrap() {
-            return unsafe { original_func(lpLibFileName) };
-        }
-        return std::ptr::null_mut();
-    }
+// Interval between memory map scans (in milliseconds)
+const SCAN_INTERVAL_MS: u64 = 500;
 
-    // Call the original function
-    let result = if let Some(original_func) = *ORIGINAL_LOADLIBRARYA.lock().unwrap() {
-        unsafe { original_func(lpLibFileName) }
+// Hook for mmap syscall
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mmap(
+    addr: *mut c_void,
+    length: usize,
+    prot: c_int,
+    flags: c_int,
+    fd: c_int,
+    offset: c_long,
+) -> *mut c_void {
+    // Call the original mmap function
+    let result = if let Some(original_func) = *ORIGINAL_MMAP.lock().unwrap() {
+        unsafe { original_func(addr, length, prot, flags, fd, offset) }
     } else {
-        error!("Original LoadLibraryA function not found");
+        error!("Original mmap function not found");
         return std::ptr::null_mut();
     };
 
-    // If successful, log the loaded DLL
-    if !result.is_null() {
-        match unsafe { CStr::from_ptr(lpLibFileName) }.to_str() {
-            Ok(lib_name) => {
-                info!("LoadLibraryA loaded: {}", lib_name);
-                notify_dll_loaded(lib_name, result);
-            }
-            Err(e) => error!("Failed to convert DLL name: {}", e),
+    // If memory was mapped with executable permission, scan for new modules
+    if !result.is_null() && (prot & PROT_EXEC) != 0 && (prot & PROT_READ) != 0 {
+        debug!("Executable memory mapped - checking for new modules");
+        
+        // Rate limit scanning to avoid excessive I/O
+        let mut last_scan_time = LAST_SCAN_TIME.lock().unwrap();
+        let now = Instant::now();
+        if now.duration_since(*last_scan_time) > Duration::from_millis(SCAN_INTERVAL_MS) {
+            *last_scan_time = now;
+            // Scan in a separate thread to avoid blocking the main thread
+            std::thread::spawn(|| {
+                scan_proc_maps();
+            });
         }
     }
 
     result
 }
 
-// Hook for LoadLibraryW
-#[unsafe(no_mangle)]
-#[allow(non_snake_case)]
-pub unsafe extern "system" fn LoadLibraryW(lpLibFileName: *const u16) -> HMODULE {
-    if lpLibFileName.is_null() {
-        if let Some(original_func) = *ORIGINAL_LOADLIBRARYW.lock().unwrap() {
-            return unsafe { original_func(lpLibFileName) };
-        }
-        return std::ptr::null_mut();
+// Scan /proc/<pid>/maps for new loaded modules
+fn scan_proc_maps() {
+    let pid = std::process::id();
+    let maps_path = format!("/proc/{}/maps", pid);
+    
+    if !Path::new(&maps_path).exists() {
+        error!("Could not find process maps at {}", maps_path);
+        return;
     }
-
-    // Call the original function
-    let result = if let Some(original_func) = *ORIGINAL_LOADLIBRARYW.lock().unwrap() {
-        unsafe { original_func(lpLibFileName) }
-    } else {
-        error!("Original LoadLibraryW function not found");
-        return std::ptr::null_mut();
-    };
-
-    // If successful, log the loaded DLL
-    if !result.is_null() {
-        // Convert wide string to narrow
-        let mut length = 0;
-        unsafe {
-            while *lpLibFileName.add(length) != 0 {
-                length += 1;
-            }
-
-            let wstr: Vec<u16> = std::slice::from_raw_parts(lpLibFileName, length).to_vec();
-            match String::from_utf16(&wstr) {
-                Ok(lib_name) => {
-                    info!("LoadLibraryW loaded: {}", lib_name);
-                    notify_dll_loaded(&lib_name, result);
+    
+    match File::open(&maps_path) {
+        Ok(file) => {
+            let reader = BufReader::new(file);
+            let mut known_modules = KNOWN_MODULES.lock().unwrap();
+            
+            for line in reader.lines() {
+                if let Ok(content) = line {
+                    // Parse the memory mapping line
+                    // Format: address perms offset dev inode pathname
+                    // Example: 7f9d80617000-7f9d80619000 r-xp 00000000 08:01 2097666 /lib/x86_64-linux-gnu/ld-2.31.so
+                    
+                    let parts: Vec<&str> = content.split_whitespace().collect();
+                    if parts.len() >= 6 {
+                        // Check if the last part is a path (not [heap], [stack], etc.)
+                        let last_part = parts.last().unwrap();
+                        if !last_part.starts_with('[') && !last_part.contains("SYSV") {
+                            let path = last_part;
+                            
+                            // Only consider Wine/Proton DLLs or potentially loaded game DLLs
+                            if (path.contains(".dll") || path.contains(".so") || path.contains(".exe")) &&
+                               !known_modules.contains(&path.to_string()) {
+                                
+                                // Add to known modules
+                                known_modules.insert(path.to_string());
+                                
+                                info!("Detected new module: {}", path);
+                                
+                                // Extract the base module name from path
+                                let base_name = Path::new(path).file_name()
+                                    .and_then(|name| name.to_str())
+                                    .unwrap_or(path);
+                                
+                                // Get the memory region from the mapping line
+                                let addr_range = parts[0];
+                                let addr_parts: Vec<&str> = addr_range.split('-').collect();
+                                if addr_parts.len() == 2 {
+                                    if let Ok(addr) = usize::from_str_radix(addr_parts[0], 16) {
+                                        // The base address where the module is loaded
+                                        let module_addr = addr as *mut c_void;
+                                        notify_dll_loaded(base_name, module_addr);
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
-                Err(e) => error!("Failed to convert wide DLL name: {}", e),
             }
+        },
+        Err(e) => {
+            error!("Failed to open {}: {}", maps_path, e);
         }
     }
-
-    result
 }
 
-// Initialize the hooks by finding and storing the original functions
+// Function to scan loaded modules at startup
+fn scan_loaded_modules() {
+    info!("Performing initial scan of loaded modules");
+    scan_proc_maps();
+}
+
+// Function to find and hook the mmap syscall
+fn hook_mmap_syscall() -> bool {
+    // On Linux, we'll use libcall to hook the mmap system call
+    // This is a simplified placeholder - in a real implementation,
+    // you would need a library like `frida-gum` or similar to hook syscalls
+    
+    unsafe {
+        // Get the original mmap function from libc
+        let func_ptr = libc::dlsym(libc::RTLD_NEXT, "mmap\0".as_ptr() as *const c_char);
+        
+        if func_ptr.is_null() {
+            error!("Failed to find original mmap function");
+            false
+        } else {
+            let original_mmap: MmapFunc = std::mem::transmute(func_ptr);
+            info!("Found original mmap at {:p}", func_ptr);
+            *ORIGINAL_MMAP.lock().unwrap() = Some(original_mmap);
+            true
+        }
+    }
+}
+
+// Initialize the hooks
 pub fn initialize_wine_hooks() -> bool {
-    let mut success = true;
+    use crate::lib_init::BYPASS_WINE_HOOKS;
+
+    // Check if hooks are bypassed
+    if *BYPASS_WINE_HOOKS.lock().unwrap() {
+        info!("Wine hooks are bypassed. Skipping initialization.");
+        return true; // Return success to prevent error in lib_init
+    }
+
+    let mut success = false;
 
     HOOK_INITIALIZED.call_once(|| {
-        info!("Initializing Wine DLL load hooks");
+        info!("Initializing Linux syscall hooks for memory mappings");
 
-        unsafe {
-            // Try multiple possible paths for Wine libraries
-            let possible_libraries = [
-                "kernel32.dll",                                // Direct library name for Wine
-                "libkernel32.dll",                             // Some Wine setups
-                "/usr/lib/wine/kernel32.dll",                  // Potential Linux location
-                "/usr/lib/i386-linux-gnu/wine/kernel32.dll",   // Debian-based 32-bit location
-                "/usr/lib/x86_64-linux-gnu/wine/kernel32.dll", // Debian-based 64-bit location
-            ];
-
-            let mut lib_result = None;
-            for lib_path in possible_libraries.iter() {
-                info!("Trying to load Wine library from: {}", lib_path);
-                match Library::open(lib_path) {
-                    Ok(lib) => {
-                        info!("Successfully loaded Wine library from: {}", lib_path);
-                        lib_result = Some(lib);
-                        break;
-                    }
-                    Err(e) => {
-                        info!("Failed to open {}: {}", lib_path, e);
-                        // Continue trying next path
-                    }
-                }
-            }
-
-            match lib_result {
-                Some(lib) => {
-                    // Find LoadLibraryA
-                    match lib.symbol::<LoadLibraryAFunc>("LoadLibraryA") {
-                        Ok(func) => {
-                            *ORIGINAL_LOADLIBRARYA.lock().unwrap() = Some(func);
-                            info!("Found original LoadLibraryA at {:p}", func as *const ());
-                        }
-                        Err(e) => {
-                            error!("Failed to find LoadLibraryA: {}", e);
-                            success = false;
-                        }
-                    }
-
-                    // Find LoadLibraryW
-                    match lib.symbol::<LoadLibraryWFunc>("LoadLibraryW") {
-                        Ok(func) => {
-                            *ORIGINAL_LOADLIBRARYW.lock().unwrap() = Some(func);
-                            info!("Found original LoadLibraryW at {:p}", func as *const ());
-                        }
-                        Err(e) => {
-                            error!("Failed to find LoadLibraryW: {}", e);
-                            success = false;
-                        }
-                    }
-                }
-                None => {
-                    error!("Failed to open kernel32.dll or equivalent from any known location");
-                    success = false;
-                }
-            }
-        }
+        // Hook the mmap syscall
+        success = hook_mmap_syscall();
 
         if success {
-            info!("Wine DLL load hooks initialized successfully");
+            info!("Linux memory mapping hooks initialized successfully");
+            // Perform an initial scan to identify already-loaded modules
+            scan_loaded_modules();
         } else {
-            error!("Failed to initialize Wine DLL load hooks");
+            error!("Failed to initialize Linux memory mapping hooks");
         }
     });
 

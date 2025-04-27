@@ -8,6 +8,8 @@ log = "0.4.27"
 log4rs = "1.2.0"
 lazy_static = "1.4.0"
 dlopen = "0.1.8"
+shellexpand = "3.1.0"
+libc = "0.2.153"
 
 [lib]
 name = "le_lib"

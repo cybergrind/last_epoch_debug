@@ -25,7 +25,7 @@ pub struct Registers {
 
 /// Captures current register state with no-op assembly that preserves all registers
 unsafe fn capture_registers() -> Registers {
-    let regs = Registers {
+    let mut regs = Registers {
         rax: 0,
         rbx: 0,
         rcx: 0,

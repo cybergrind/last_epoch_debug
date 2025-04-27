@@ -1,6 +1,7 @@
 use lazy_static::lazy_static;
 use log::{error, info, warn};
 use std::collections::HashMap;
+use std::env;
 use std::ffi::CStr;
 use std::marker::Send;
 use std::os::raw::{c_char, c_void};
@@ -26,6 +27,8 @@ lazy_static! {
     pub static ref HOOKS: Mutex<HashMap<String, SendPtr>> = Mutex::new(HashMap::new());
     // Static to store the DLL notification callback
     static ref DLL_NOTIFICATION_CALLBACK: Mutex<Option<DllNotificationCallback>> = Mutex::new(None);
+    // Flag to indicate if we should bypass Wine hooks
+    pub static ref BYPASS_WINE_HOOKS: Mutex<bool> = Mutex::new(false);
 }
 
 // Static to ensure we only initialize once
@@ -117,6 +120,8 @@ pub extern "C" fn le_lib_init() -> bool {
         initialize_logger();
         info!("le_lib_init: Library initialization started");
 
+
+
         // Initialize hooks hashmap (already done via lazy_static)
         info!("le_lib_init: Hooks hashmap initialized");
 
@@ -131,14 +136,22 @@ pub extern "C" fn le_lib_init() -> bool {
             }
         }
 
-        // Initialize Wine hooks
         match initialize_wine_hooks() {
             true => {
                 info!("le_lib_init: Wine DLL loading hooks initialized successfully");
             }
             false => {
                 error!("le_lib_init: Failed to initialize Wine DLL loading hooks");
-                success = false;
+
+                // Check if we should continue despite failure
+                if env::var("LE_CONTINUE_ON_HOOK_FAILURE")
+                    .map(|v| v == "1" || v.to_lowercase() == "true")
+                    .unwrap_or(false)
+                {
+                    info!("le_lib_init: LE_CONTINUE_ON_HOOK_FAILURE=true, continuing despite hook failure");
+                } else {
+                    success = false;
+                }
             }
         }
 
