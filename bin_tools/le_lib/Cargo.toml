@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 log = "0.4.27"
 log4rs = "1.2.0"
+lazy_static = "1.4.0"
 
 [lib]
 name = "le_lib"

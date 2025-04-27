@@ -27,7 +27,6 @@ hooks:
 ```
 
 TODO:
-* move `le_lib_echo` into separate file
 * add module `le_lib_init`:
   - initialized logger
   - setup hook that will log after dll is loaded in memory with dll name

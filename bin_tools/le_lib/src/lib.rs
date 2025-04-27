@@ -2,10 +2,12 @@ use log::{LevelFilter, info};
 use std::sync::Once;
 
 pub use echo::le_lib_echo;
+pub use lib_init::le_lib_init;
 
 // Declare modules
 pub mod constants;
 pub mod echo;
+pub mod lib_init;
 
 static INIT: Once = Once::new();
 
