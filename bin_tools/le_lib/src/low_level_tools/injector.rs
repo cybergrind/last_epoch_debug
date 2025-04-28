@@ -4,11 +4,19 @@ use std::ptr;
 use crate::hook_tools::ActiveHook;
 use crate::hook_tools::Hook;
 
+/// Information about a written trampoline
+pub struct TrampolineInfo {
+    /// Memory address where the trampoline is located
+    pub address: u64,
+    /// Size of the trampoline in memory
+    pub size: usize,
+}
+
 /// Injects compiled code into memory and updates the game code
 #[allow(unused_variables)]
 pub unsafe fn inject_hook(
     hook: &Hook,
-    trampoline_data: &[u8],
+    trampoline_info: &TrampolineInfo,
     jumper_data: &[u8],
 ) -> Result<ActiveHook, String> {
     unsafe {
@@ -30,18 +38,6 @@ pub unsafe fn inject_hook(
                 Err(e) => return Err(format!("Failed to get hook function address: {}", e)),
             };
 
-        // In a real implementation, we would:
-        // 1. Allocate executable memory for the trampoline
-        // 2. Copy the trampoline code to the allocated memory
-        // 3. Save the original bytes at the target address
-        // 4. Write the jumper instruction to the target address
-
-        // For now, implement a placeholder - memory management will be added in a more extensive implementation
-        let trampoline_address = allocate_executable_memory(trampoline_data.len())?;
-
-        // Copy the trampoline data to the allocated memory
-        copy_to_executable_memory(trampoline_address, trampoline_data)?;
-
         // Save the original bytes at the target address
         let original_bytes = read_memory(target_address, jumper_data.len())?;
 
@@ -52,9 +48,26 @@ pub unsafe fn inject_hook(
         Ok(ActiveHook {
             name: hook.name.clone(),
             target_address,
-            trampoline_address,
+            trampoline_address: trampoline_info.address,
             hook_function_address,
             original_bytes,
+        })
+    }
+}
+
+/// Writes trampoline code to executable memory
+/// Returns information about the trampoline including its address
+pub unsafe fn write_trampoline(trampoline_data: &[u8]) -> Result<TrampolineInfo, String> {
+    unsafe {
+        // Allocate executable memory for the trampoline
+        let trampoline_address = allocate_executable_memory(trampoline_data.len())?;
+
+        // Copy the trampoline data to the allocated memory
+        copy_to_executable_memory(trampoline_address, trampoline_data)?;
+
+        Ok(TrampolineInfo {
+            address: trampoline_address,
+            size: trampoline_data.len(),
         })
     }
 }
@@ -200,7 +213,7 @@ pub unsafe fn restore_hook(hook: &ActiveHook) -> Result<(), String> {
 }
 
 /// Frees previously allocated executable memory
-unsafe fn free_executable_memory(address: u64, size: usize) -> Result<(), String> {
+pub unsafe fn free_executable_memory(address: u64, size: usize) -> Result<(), String> {
     unsafe {
         if address == 0 {
             return Ok(());
@@ -376,8 +389,12 @@ mod tests {
         let trampoline_data = vec![0x55, 0x48, 0x89, 0xE5, 0xFF, 0xD0, 0x5D, 0xC3]; // Simple function prologue + call + epilogue
         let jumper_data = vec![0xE9, 0x00, 0x00, 0x00, 0x00, 0x90, 0x90, 0x90]; // JMP instruction + NOP padding
 
+        // Write the trampoline
+        let trampoline_info =
+            unsafe { write_trampoline(&trampoline_data) }.expect("Failed to write trampoline");
+
         // Inject the hook
-        let inject_result = unsafe { inject_hook(&mock_hook, &trampoline_data, &jumper_data) };
+        let inject_result = unsafe { inject_hook(&mock_hook, &trampoline_info, &jumper_data) };
         assert!(
             inject_result.is_ok(),
             "Failed to inject hook: {:?}",

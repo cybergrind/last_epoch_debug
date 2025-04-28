@@ -65,6 +65,8 @@ def compile_assembly(asm_code: str, format: str = 'elf64') -> bytes:
         with open(asm_path, 'w') as f:
             f.write(asm_code)
 
+        logger.info(f'Compiling code \n: {asm_code}')
+
         # Compile with NASM
         logger.info(f'Compiling assembly code using format: {format}')
         cmd = ['nasm', '-o', obj_path, '-f', format, '-g', '-w+all', asm_path]
@@ -147,7 +149,7 @@ class CompilerHandler(BaseHTTPRequestHandler):
             format = request_data.get('format', 'elf64')
 
             # Validate format
-            valid_formats = ['elf64', 'elf32', 'win32', 'win64', 'macho64']
+            valid_formats = ['elf64', 'elf32', 'win32', 'win64', 'macho64', 'bin']
             if format not in valid_formats:
                 self._send_error_response(
                     400, f"Invalid format. Must be one of: {', '.join(valid_formats)}"

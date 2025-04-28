@@ -406,11 +406,12 @@ unsafe fn verify_memory_content(address: u64, expected_content: &str) -> bool {
     result
 }
 
-/// Generates assembly for the hook trampoline
+/// Generates assembly for the hook trampoline and jumper
 fn generate_hook_assembly(
     hook_name: &str,
     target_address: u64,
     hook_function_address: u64,
+    trampoline_address: Option<u64>, // Optional trampoline address for jumper generation
 ) -> Result<(String, String), String> {
     // Get a reliable temporary directory
     let tmp_dir = std::env::var("TMPDIR")
@@ -446,9 +447,7 @@ fn generate_hook_assembly(
 
     // Create the trampoline assembly
     let trampoline_asm = format!(
-        r#"section .text
-global _start
-_start:
+        r#"BITS 64
     ; Save all registers
     push rax
     push rbx
@@ -491,22 +490,33 @@ _start:
 
     ; Jump back to the original function (after our jumper)
     mov rax, 0x{:X}
-    add rax, 5    ; Skip the jumper instruction (5 bytes for a typical jmp)
+    add rax, 12    ; Skip the jumper instruction (12 bytes for a typical jmp)
     jmp rax
 "#,
         hook_function_address, target_address
     );
 
     // Create the jumper assembly (this will replace the original code)
-    let jumper_asm = format!(
-        r#"section .text
+    // Use the provided trampoline address if available
+    let jumper_asm = if let Some(addr) = trampoline_address {
+        format!(
+            r#"BITS 64
+    ; Jump to our trampoline
+    mov rax, 0x{:X}
+    jmp rax
+"#,
+            addr
+        )
+    } else {
+        format!(
+            r#"section .text
 global _start
 _start:
-    ; Jump to our trampoline
-    jmp qword 0x{:X}
-"#,
-        target_address
-    );
+    ; Placeholder for jump instruction - address will be replaced later
+    jmp qword 0x1111111111111111
+"#
+        )
+    };
 
     // Write the assembly files
     if let Err(e) = fs::write(&trampoline_asm_path, trampoline_asm) {
@@ -520,7 +530,7 @@ _start:
     Ok((trampoline_asm_path, jumper_asm_path))
 }
 
-/// Compile and inject the hook using remote compilation service
+/// Compile and inject the hook using remote compilation service with separate trampoline and jumper steps
 unsafe fn compile_and_inject_hook(hook: &Hook) -> Result<ActiveHook, String> {
     // Calculate the real target address
     let target_address = calculate_real_target_address(hook)?;
@@ -528,15 +538,15 @@ unsafe fn compile_and_inject_hook(hook: &Hook) -> Result<ActiveHook, String> {
     // Get the hook function address
     let hook_function_address = get_function_address(&hook.hook_function)?;
 
-    // Generate assembly code
-    let (trampoline_asm_path, jumper_asm_path) =
-        generate_hook_assembly(&hook.name, target_address, hook_function_address)?;
+    // FIRST STEP: Generate and compile the trampoline
 
-    // Read the assembly code files
+    // Generate assembly code for trampoline (without knowing trampoline address yet)
+    let (trampoline_asm_path, _) =
+        generate_hook_assembly(&hook.name, target_address, hook_function_address, None)?;
+
+    // Read the assembly code file
     let trampoline_asm = fs::read_to_string(&trampoline_asm_path)
         .map_err(|e| format!("Failed to read trampoline assembly: {}", e))?;
-    let jumper_asm = fs::read_to_string(&jumper_asm_path)
-        .map_err(|e| format!("Failed to read jumper assembly: {}", e))?;
 
     let tmp_dir = std::path::Path::new(&trampoline_asm_path)
         .parent()
@@ -544,14 +554,13 @@ unsafe fn compile_and_inject_hook(hook: &Hook) -> Result<ActiveHook, String> {
         .to_string_lossy()
         .into_owned();
 
-    // Set the output paths for the compiled objects
+    // Set the output path for the compiled trampoline
     let trampoline_obj_path = format!("{}/{}_trampoline.o", tmp_dir, hook.name);
-    let jumper_obj_path = format!("{}/{}_jumper.o", tmp_dir, hook.name);
 
-    // Compile the assembly code using the remote server
+    // Compile the trampoline assembly code using the remote server
     info!("Compiling trampoline assembly using remote server");
     let trampoline_result =
-        compiler::compile_assembly_remote(&trampoline_asm, &trampoline_obj_path, "elf64");
+        compiler::compile_assembly_remote(&trampoline_asm, &trampoline_obj_path, "bin");
 
     // Check compilation result
     let trampoline_data = match trampoline_result {
@@ -561,19 +570,71 @@ unsafe fn compile_and_inject_hook(hook: &Hook) -> Result<ActiveHook, String> {
         }
     };
 
+    // Write the trampoline to executable memory
+    info!("Writing trampoline to executable memory");
+    let trampoline_info = unsafe { injector::write_trampoline(&trampoline_data) }?;
+
+    info!(
+        "Trampoline written at address 0x{:X}",
+        trampoline_info.address
+    );
+
+    // SECOND STEP: Now that we know the trampoline address, generate and compile the jumper
+
+    // Generate jumper assembly with the actual trampoline address
+    let (_, jumper_asm_path) = generate_hook_assembly(
+        &hook.name,
+        target_address,
+        hook_function_address,
+        Some(trampoline_info.address),
+    )?;
+
+    // Read the jumper assembly code
+    let jumper_asm = fs::read_to_string(&jumper_asm_path)
+        .map_err(|e| format!("Failed to read jumper assembly: {}", e))?;
+
+    // Set the output path for the compiled jumper
+    let jumper_obj_path = format!("{}/{}_jumper.o", tmp_dir, hook.name);
+
+    // Compile the jumper assembly code
     info!("Compiling jumper assembly using remote server");
-    let jumper_result = compiler::compile_assembly_remote(&jumper_asm, &jumper_obj_path, "elf64");
+    let jumper_result = compiler::compile_assembly_remote(&jumper_asm, &jumper_obj_path, "bin");
 
     // Check compilation result
     let jumper_data = match jumper_result {
         compiler::CompilationResult::Success(data) => data,
         compiler::CompilationResult::Error(err) => {
+            // Free the trampoline memory if jumper compilation fails
+            unsafe {
+                // use the trampoline_info to free the memory
+                let _ =
+                    injector::free_executable_memory(trampoline_info.address, trampoline_info.size);
+            }
             return Err(format!("Failed to compile jumper: {}", err));
         }
     };
+    // jumper length must be 12 bytes
+    if jumper_data.len() != 12 {
+        // Free the trampoline memory if jumper compilation fails
+        unsafe {
+            // use the trampoline_info to free the memory
+            let _ = injector::free_executable_memory(trampoline_info.address, trampoline_info.size);
+        }
+        let first_bytes_of_jumper = &jumper_data[0..std::cmp::min(25, jumper_data.len())];
+        let first_bytes_str = first_bytes_of_jumper
+            .iter()
+            .map(|b| format!("{:02X}", b))
+            .collect::<Vec<String>>()
+            .join(" ");
+        error!("Jumper data is not 12 bytes long, got: {}", first_bytes_str);
+        return Err(format!(
+            "Jumper length is not 122 bytes actual size is {}",
+            jumper_data.len()
+        ));
+    }
 
     // Inject the hook using our injector module
-    unsafe { injector::inject_hook(hook, &trampoline_data, &jumper_data) }
+    unsafe { injector::inject_hook(hook, &trampoline_info, &jumper_data) }
 }
 
 fn get_only_matching_hooks(process_name: &str) -> Vec<Hook> {
@@ -651,7 +712,7 @@ pub extern "C" fn le_lib_load_hook() -> bool {
             continue;
         }
 
-        // Compile and inject the hook using our new remote compiler
+        // Compile and inject the hook using our updated two-step process
         match unsafe { compile_and_inject_hook(hook) } {
             Ok(active_hook) => {
                 info!("Successfully loaded hook '{}'", hook.name);

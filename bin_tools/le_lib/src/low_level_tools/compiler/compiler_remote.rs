@@ -191,4 +191,47 @@ msg:    db "Hello, World", 10    ; 10 is the ASCII code for new line
             "Server URL should start with http://"
         );
     }
+
+    #[test]
+    fn test_remote_compile_jumper() {
+        let jumper_code = r#"
+        BITS 64
+        mov rax, 0x6ffff84720d0
+        jmp rax
+        "#;
+        let expected_binary = vec![
+            // 48b8 d020 47f8 ff6f 0000 ffe0
+            0x48, 0xb8, 0xd0, 0x20, 0x47, 0xf8, 0xff, 0x6f, 0x00, 0x00, 0xff, 0xe0,
+        ];
+
+        let tmp_dir = get_temp_dir();
+        let output_path = format!("{}/test_remote_compile_jumper.o", tmp_dir);
+        if Path::new(&output_path).exists() {
+            fs::remove_file(&output_path).expect("Could not delete existing test output file");
+        }
+        let result = compile_assembly_remote(jumper_code, &output_path, "bin");
+        match result {
+            CompilationResult::Success(binary_data) => {
+                assert_eq!(
+                    binary_data, expected_binary,
+                    "Compiled binary does not match expected binary"
+                );
+                println!(
+                    "Successfully compiled jumper code. Binary size: {} bytes",
+                    binary_data.len()
+                );
+            }
+            CompilationResult::Error(err) => {
+                panic!("Remote compilation failed: {}", err);
+            }
+        }
+        // Clean up the test file
+        if Path::new(&output_path).exists() {
+            fs::remove_file(&output_path).expect("Could not delete test output file");
+        }
+        // Clean up the temporary assembly file
+        if Path::new(&output_path).exists() {
+            fs::remove_file(&output_path).expect("Could not delete test output file");
+        }
+    }
 }
