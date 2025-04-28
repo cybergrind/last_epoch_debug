@@ -71,7 +71,6 @@ pub fn is_wine_process() -> bool {
     // Check if this process is running under Wine
     // Look for Wine-specific environment variables or files
     use std::env;
-    use std::path::Path;
 
     if let Ok(wineprefix) = env::var("WINEPREFIX") {
         return !wineprefix.is_empty();
@@ -545,9 +544,7 @@ fn generate_hook_assembly(
     add rax, 12    ; Skip the jumper instruction (12 bytes for a typical jmp)
     jmp rax
 "#,
-        hook_function_address, 
-        hook.overwritten_instructions,
-        target_address
+        hook_function_address, hook.overwritten_instructions, target_address
     );
 
     // Create the jumper assembly (this will replace the original code)
@@ -589,6 +586,19 @@ _start:
     }
 
     Ok((trampoline_asm_path, jumper_asm_path))
+}
+
+fn align_to_size(buffer: &mut Vec<u8>, size: u64) {
+    // if buffer size is less than size, fill with NOPs = 0x90
+    let current_size = buffer.len() as u64;
+    if current_size < size {
+        let padding = size - current_size;
+        buffer.extend(vec![0x90; padding as usize]);
+    } else if current_size > size {
+        // if buffer size is greater than size, truncate the buffer
+        buffer.truncate(size as usize);
+    }
+    assert_eq!(buffer.len() as u64, size);
 }
 
 /// Compile and inject the hook using remote compilation service with separate trampoline and jumper steps
@@ -667,7 +677,7 @@ unsafe fn compile_and_inject_hook(hook: &Hook) -> Result<ActiveHook, String> {
     let jumper_result = compiler::compile_assembly_remote(&jumper_asm, &jumper_obj_path, "bin");
 
     // Check compilation result
-    let jumper_data = match jumper_result {
+    let mut jumper_data = match jumper_result {
         compiler::CompilationResult::Success(data) => data,
         compiler::CompilationResult::Error(err) => {
             // Free the trampoline memory if jumper compilation fails
@@ -679,25 +689,8 @@ unsafe fn compile_and_inject_hook(hook: &Hook) -> Result<ActiveHook, String> {
             return Err(format!("Failed to compile jumper: {}", err));
         }
     };
-    // jumper length must be 12 bytes
-    if jumper_data.len() != 16 {
-        // Free the trampoline memory if jumper compilation fails
-        unsafe {
-            // use the trampoline_info to free the memory
-            let _ = injector::free_executable_memory(trampoline_info.address, trampoline_info.size);
-        }
-        let first_bytes_of_jumper = &jumper_data[0..std::cmp::min(25, jumper_data.len())];
-        let first_bytes_str = first_bytes_of_jumper
-            .iter()
-            .map(|b| format!("{:02X}", b))
-            .collect::<Vec<String>>()
-            .join(" ");
-        error!("Jumper data is not 16 bytes long, got: {}", first_bytes_str);
-        return Err(format!(
-            "Jumper length is not 16 bytes actual size is {}",
-            jumper_data.len()
-        ));
-    }
+    // align jumper to hook.align_size
+    align_to_size(&mut jumper_data, hook.align_size);
 
     // Create a modified hook with correct target address for injector
     let mut injection_hook = hook.clone();

@@ -1,10 +1,7 @@
-use libc::{
-    iovec, pid_t, process_vm_readv, process_vm_writev, PROT_EXEC, PROT_READ, PROT_WRITE,
-};
+use libc::{PROT_EXEC, PROT_READ, PROT_WRITE, iovec, pid_t, process_vm_readv, process_vm_writev};
 use log::{debug, error, info, warn};
-use std::fs;
 use std::io;
-use std::io::{Write, Seek};
+use std::io::{Seek, Write};
 use std::process;
 
 /// Read memory from the current process safely, even in Wine environment
@@ -148,8 +145,14 @@ fn try_process_vm_writev(address: u64, data: &[u8]) -> Result<(), String> {
 
     if result == -1 {
         let err = io::Error::last_os_error();
-        info!("process_vm_writev failed for address 0x{:x}: {}", address, err);
-        return Err(format!("Failed to write memory at 0x{:x}: {}", address, err));
+        info!(
+            "process_vm_writev failed for address 0x{:x}: {}",
+            address, err
+        );
+        return Err(format!(
+            "Failed to write memory at 0x{:x}: {}",
+            address, err
+        ));
     }
 
     // Check if we actually wrote the requested amount
@@ -278,8 +281,8 @@ fn try_mprotect_and_write(address: u64, data: &[u8]) -> Result<(), String> {
     let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
     let page_mask = !(page_size - 1);
     let page_start = (address & page_mask as u64) as *mut libc::c_void;
-    let page_end =
-        (((address + data.len() as u64 - 1) & page_mask as u64) + page_size as u64) as *mut libc::c_void;
+    let page_end = (((address + data.len() as u64 - 1) & page_mask as u64) + page_size as u64)
+        as *mut libc::c_void;
     let region_size = (page_end as usize) - (page_start as usize);
 
     info!(
@@ -288,13 +291,8 @@ fn try_mprotect_and_write(address: u64, data: &[u8]) -> Result<(), String> {
     );
 
     // Try to make the memory writable
-    let mprotect_result = unsafe {
-        libc::mprotect(
-            page_start,
-            region_size,
-            PROT_READ | PROT_WRITE | PROT_EXEC,
-        )
-    };
+    let mprotect_result =
+        unsafe { libc::mprotect(page_start, region_size, PROT_READ | PROT_WRITE | PROT_EXEC) };
 
     if mprotect_result == -1 {
         let err = io::Error::last_os_error();

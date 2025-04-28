@@ -15,4 +15,4 @@ hooks:
       push    r13
       push    r15
       sub     rsp, 0x28
-      cmp     byte [rip+0x32d6031], 0x0
+      cmp    BYTE [rel $+0x32d6031], 0x0
