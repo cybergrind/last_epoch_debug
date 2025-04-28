@@ -103,8 +103,6 @@ unsafe fn capture_registers() -> Registers {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn le_lib_echo() {
-    crate::initialize_logger();
-
     // Safely capture registers
     let regs = unsafe { capture_registers() };
 

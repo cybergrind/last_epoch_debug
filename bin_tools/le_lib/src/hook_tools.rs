@@ -495,14 +495,21 @@ fn generate_hook_assembly(
     // Create the trampoline assembly
     let trampoline_asm = format!(
         r#"BITS 64
-    ; Save all registers
+    ; restore previous rax state
+    pop rax
+
+    ; Save all registers and flags in the correct order for x86-64 ABI compliance
+    ; Save flags first to preserve them before any operations
+    pushfq
+
+    ; Save all general purpose registers
     push rax
-    push rbx
     push rcx
     push rdx
+    push rbx
+    push rbp
     push rsi
     push rdi
-    push rbp
     push r8
     push r9
     push r10
@@ -511,14 +518,21 @@ fn generate_hook_assembly(
     push r13
     push r14
     push r15
-    pushfq
+
+    ; create new stack frame
+    push rbp
+    mov rbp, rsp
+
 
     ; Call the hook function
     mov rax, 0x{:X}
     call rax
 
-    ; Restore all registers
-    popfq
+    ; restore the original stack frame
+    mov rsp, rbp
+    pop rbp
+
+    ; Restore all registers in reverse order
     pop r15
     pop r14
     pop r13
@@ -527,41 +541,43 @@ fn generate_hook_assembly(
     pop r10
     pop r9
     pop r8
-    pop rbp
     pop rdi
     pop rsi
+    pop rbp
+    pop rbx
     pop rdx
     pop rcx
-    pop rbx
-    ; rax will be restored by trampoline
-    ; pop rax
+    pop rax
 
-    ; Put overwritten instructions back
+    ; Restore flags last
+    popfq
+
+    ; Execute overwritten instructions
     {}
 
     ; Jump back to the original function (after our jumper)
+    push rax
     mov rax, 0x{:X}
-    add rax, 12    ; Skip the jumper instruction (12 bytes for a typical jmp)
+    ; skip following instructions bytes
+    ; push rax  ; l byte
+    ; mov rax, 0xDEADBEEF  ; 10 bytes
+    ; jmp rax  ; 2 bytes
+    ; pop rax <- need to jump here
+    add rax, 0xD
     jmp rax
 "#,
         hook_function_address, hook.overwritten_instructions, target_address
     );
 
     // Create the jumper assembly (this will replace the original code)
-    // Use the provided trampoline address if available
     let jumper_asm = if let Some(addr) = trampoline_address {
         format!(
             r#"BITS 64
     ; Jump to our trampoline
+    push rax
     mov rax, 0x{:X}
     jmp rax
-    ; when hook is called we will jump here
-    ; so we need to restore original rax state
     pop rax
-    ; align to 16 bytes
-    nop
-    nop
-    nop
 "#,
             addr
         )
