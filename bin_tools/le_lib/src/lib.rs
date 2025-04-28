@@ -12,14 +12,17 @@ pub mod hook_tools;
 pub mod lib_init;
 pub mod low_level_tools;
 pub mod wine_hooks;
+pub mod wine_memory; // Add new module for Wine memory operations
 
 static INIT: Once = Once::new();
 
 pub fn initialize_logger() {
+    let current_pid = std::process::id();
+    let log_pattern_with_pid = format!("[PID: {}] {}", current_pid, constants::LOG_PATTERN);
     INIT.call_once(|| {
         let config = log4rs::append::file::FileAppender::builder()
             .encoder(Box::new(log4rs::encode::pattern::PatternEncoder::new(
-                constants::LOG_PATTERN,
+                log_pattern_with_pid.as_str(),
             )))
             .build(constants::LOG_FILE_PATH)
             .unwrap();

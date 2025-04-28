@@ -1,4 +1,4 @@
-use log::info;
+use log::{error, info, warn};
 use std::ptr;
 
 use crate::hook_tools::ActiveHook;
@@ -25,7 +25,8 @@ pub unsafe fn inject_hook(
             hook.name, hook.target_address
         );
 
-        // Parse the target address
+        // We don't need to parse the target address here - the caller should provide the real address
+        // that has already been properly calculated with base offset applied if needed
         let target_address = match crate::hook_tools::parse_hex_address(&hook.target_address) {
             Ok(addr) => addr,
             Err(e) => return Err(format!("Failed to parse target address: {}", e)),
@@ -37,6 +38,8 @@ pub unsafe fn inject_hook(
                 Ok(addr) => addr,
                 Err(e) => return Err(format!("Failed to get hook function address: {}", e)),
             };
+
+        info!("Using calculated target address: 0x{:x}", target_address);
 
         // Save the original bytes at the target address
         let original_bytes = read_memory(target_address, jumper_data.len())?;
@@ -127,8 +130,15 @@ unsafe fn copy_to_executable_memory(address: u64, data: &[u8]) -> Result<(), Str
 
 /// Reads memory from a specified address
 unsafe fn read_memory(address: u64, size: usize) -> Result<Vec<u8>, String> {
+    // Check if we're running in a Wine process
+    if crate::hook_tools::is_wine_process() {
+        // Use special Wine-safe memory reading method that bypasses protection mechanisms
+        return crate::wine_memory::safe_read_memory(address, size);
+    }
+
     unsafe {
-        // Check if memory is accessible - using our safer implementation now
+        // Standard Linux memory access for non-Wine processes
+        // Check if memory is accessible - using our safer implementation
         if !crate::hook_tools::is_memory_accessible(address, size) {
             return Err(format!(
                 "Memory at address 0x{:x} is not accessible",
@@ -158,18 +168,16 @@ unsafe fn read_memory(address: u64, size: usize) -> Result<Vec<u8>, String> {
     }
 }
 
-/// Writes data to a memory address
+/// Writes data to a memory address, handling memory protection changes
 unsafe fn write_memory(address: u64, data: &[u8]) -> Result<(), String> {
-    unsafe {
-        // Check if memory is accessible and writable
-        if !crate::hook_tools::is_memory_accessible(address, data.len()) {
-            return Err(format!(
-                "Memory at address 0x{:x} is not accessible",
-                address
-            ));
-        }
+    // Check if we're running in a Wine process
+    if crate::hook_tools::is_wine_process() {
+        // Use special Wine-safe memory writing method that bypasses protection mechanisms
+        return crate::wine_memory::safe_write_memory(address, data);
+    }
 
-        // Set the memory protection to writable if necessary
+    unsafe {
+        // Calculate page boundaries
         let page_size = libc::sysconf(libc::_SC_PAGESIZE) as usize;
         let page_mask = !(page_size - 1);
         let page_start = (address & page_mask as u64) as *mut libc::c_void;
@@ -177,7 +185,17 @@ unsafe fn write_memory(address: u64, data: &[u8]) -> Result<(), String> {
             as *mut libc::c_void;
         let region_size = (page_end as usize) - (page_start as usize);
 
-        // Make the memory writable
+        // Get the current memory permissions before changing them
+        if let Some(perms) = crate::hook_tools::get_memory_permissions(address) {
+            info!("Current memory permissions at 0x{:x}: {}", address, perms);
+        }
+
+        // Make the memory writable and executable
+        info!(
+            "Setting memory protection RWX for region 0x{:x} - 0x{:x}",
+            page_start as u64, page_end as u64
+        );
+
         let result = libc::mprotect(
             page_start,
             region_size,
@@ -185,19 +203,23 @@ unsafe fn write_memory(address: u64, data: &[u8]) -> Result<(), String> {
         );
 
         if result != 0 {
+            let error = std::io::Error::last_os_error();
+            error!("Failed to change memory protection: {}", error);
             return Err(format!(
-                "Failed to change memory protection: {}",
-                std::io::Error::last_os_error()
+                "Failed to change memory protection at 0x{:x}: {}",
+                address, error
             ));
         }
 
+        info!("Memory protection changed successfully, attempting to write data");
+
         // Write the data - wrap in a catch_unwind to handle any segfaults
-        let write_result = std::panic::catch_unwind(|| {
+        let write_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let ptr = address as *mut u8;
             for (i, &byte) in data.iter().enumerate() {
                 ptr::write_volatile(ptr.add(i), byte);
             }
-        });
+        }));
 
         if write_result.is_err() {
             return Err(format!(
@@ -210,8 +232,13 @@ unsafe fn write_memory(address: u64, data: &[u8]) -> Result<(), String> {
         std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
 
         // Flush instruction cache by executing an empty inline assembly block
-        // This is needed on some architectures to ensure instruction cache coherency
         std::arch::asm!("", options(nomem, nostack));
+
+        info!(
+            "Successfully wrote {} bytes to memory at 0x{:x}",
+            data.len(),
+            address
+        );
 
         Ok(())
     }

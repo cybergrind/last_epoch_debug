@@ -11,7 +11,7 @@ use crate::constants::get_hooks_config_path;
 use crate::low_level_tools::{compiler, injector};
 
 // Structure to represent a hook configuration
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Hook {
     pub name: String,
     pub target_address: String,
@@ -44,6 +44,8 @@ lazy_static! {
 }
 
 /// Safely checks if memory at the given address is accessible
+/// Returns true if the memory is mapped (even if it has no permissions)
+/// so that we can try to modify the permissions before accessing
 pub fn is_memory_accessible(address: u64, size: usize) -> bool {
     // Check for null address early
     if address == 0 {
@@ -56,12 +58,31 @@ pub fn is_memory_accessible(address: u64, size: usize) -> bool {
         return false;
     }
 
-    // If mapped, we still need to be careful about checking permissions
-    // Instead of directly accessing memory which might segfault,
-    // we'll use proc maps to determine if we have the right permissions
-    if let Some(perms) = get_memory_permissions(address) {
-        // We need at least read permission
-        if perms.contains('r') {
+    // For injection purposes, we care if the memory is mapped, even if permissions
+    // are restrictive. We'll try to change permissions before access.
+    true
+}
+
+/// Special handling for Wine memory access
+/// We need to take extra care when accessing memory in Wine processes
+pub fn is_wine_process() -> bool {
+    // Check if this process is running under Wine
+    // Look for Wine-specific environment variables or files
+    use std::env;
+    use std::path::Path;
+
+    if let Ok(wineprefix) = env::var("WINEPREFIX") {
+        return !wineprefix.is_empty();
+    }
+
+    if let Ok(winedebug) = env::var("WINEDEBUG") {
+        return !winedebug.is_empty();
+    }
+
+    // Check if wine libraries are loaded in the process
+    let maps_path = "/proc/self/maps";
+    if let Ok(content) = std::fs::read_to_string(maps_path) {
+        if content.contains("wine") || content.contains("ntdll.so") {
             return true;
         }
     }
@@ -70,7 +91,7 @@ pub fn is_memory_accessible(address: u64, size: usize) -> bool {
 }
 
 /// Get memory permissions from /proc/self/maps
-fn get_memory_permissions(address: u64) -> Option<String> {
+pub fn get_memory_permissions(address: u64) -> Option<String> {
     use std::fs::File;
     use std::io::{BufRead, BufReader};
 
@@ -558,6 +579,11 @@ unsafe fn compile_and_inject_hook(hook: &Hook) -> Result<ActiveHook, String> {
     // Calculate the real target address
     let target_address = calculate_real_target_address(hook)?;
 
+    info!(
+        "Using real target address for hook '{}': 0x{:x}",
+        hook.name, target_address
+    );
+
     // Get the hook function address
     let hook_function_address = get_function_address(&hook.hook_function)?;
 
@@ -656,8 +682,12 @@ unsafe fn compile_and_inject_hook(hook: &Hook) -> Result<ActiveHook, String> {
         ));
     }
 
+    // Create a modified hook with correct target address for injector
+    let mut injection_hook = hook.clone();
+    injection_hook.target_address = format!("{:x}", target_address);
+
     // Inject the hook using our injector module
-    unsafe { injector::inject_hook(hook, &trampoline_info, &jumper_data) }
+    unsafe { injector::inject_hook(&injection_hook, &trampoline_info, &jumper_data) }
 }
 
 fn get_only_matching_hooks(process_name: &str) -> Vec<Hook> {
