@@ -82,7 +82,9 @@ pub fn compile_assembly_remote(
     let binary_str = match json_response.get("binary").and_then(|v| v.as_str()) {
         Some(data) => data,
         None => {
-            return CompilationResult::Error("Binary data missing from server response".to_string());
+            return CompilationResult::Error(
+                "Binary data missing from server response".to_string(),
+            );
         }
     };
 

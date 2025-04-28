@@ -65,7 +65,13 @@ unsafe fn allocate_executable_memory(size: usize) -> Result<u64, String> {
         // This is a simplified implementation - in reality we would use mmap or VirtualAlloc
         // We're using libc's mmap for Linux systems
         let page_size = libc::sysconf(libc::_SC_PAGESIZE) as usize;
-        let aligned_size = (size + page_size - 1) & !(page_size - 1);
+
+        // Ensure we allocate at least one page, even for zero-size requests
+        let aligned_size = if size == 0 {
+            page_size
+        } else {
+            (size + page_size - 1) & !(page_size - 1)
+        };
 
         let addr = libc::mmap(
             ptr::null_mut(),
@@ -201,7 +207,13 @@ unsafe fn free_executable_memory(address: u64, size: usize) -> Result<(), String
         }
 
         let page_size = libc::sysconf(libc::_SC_PAGESIZE) as usize;
-        let aligned_size = (size + page_size - 1) & !(page_size - 1);
+        // Ensure we use at least one page size when freeing memory,
+        // especially for zero-size allocations
+        let aligned_size = if size == 0 {
+            page_size
+        } else {
+            (size + page_size - 1) & !(page_size - 1)
+        };
 
         let result = libc::munmap(address as *mut libc::c_void, aligned_size);
 
@@ -213,5 +225,261 @@ unsafe fn free_executable_memory(address: u64, size: usize) -> Result<(), String
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Once;
+
+    // Initialize logger once for all tests
+    static INIT: Once = Once::new();
+
+    fn setup() {
+        INIT.call_once(|| {
+            crate::initialize_logger();
+        });
+    }
+
+    // Test allocating and freeing executable memory
+    #[test]
+    fn test_allocate_free_executable_memory() {
+        setup();
+
+        // Test allocating memory
+        let size = 1024;
+        let address =
+            unsafe { allocate_executable_memory(size) }.expect("Failed to allocate memory");
+
+        // Verify the address is non-zero
+        assert_ne!(address, 0, "Allocated memory address should not be zero");
+
+        // Try to free the memory
+        unsafe {
+            let result = free_executable_memory(address, size);
+            assert!(
+                result.is_ok(),
+                "Failed to free executable memory: {:?}",
+                result.err()
+            );
+        }
+    }
+
+    // Test writing to and reading from allocated memory
+    #[test]
+    fn test_write_read_memory() {
+        setup();
+
+        // Allocate executable memory for our test
+        let test_data = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x12, 0x34, 0x56, 0x78];
+        let size = test_data.len();
+
+        let address =
+            unsafe { allocate_executable_memory(size) }.expect("Failed to allocate memory");
+
+        // Write test data to the allocated memory
+        let write_result = unsafe { copy_to_executable_memory(address, &test_data) };
+        assert!(
+            write_result.is_ok(),
+            "Failed to write to memory: {:?}",
+            write_result.err()
+        );
+
+        // Read back the memory
+        let read_result = unsafe { read_memory(address, size) };
+        assert!(
+            read_result.is_ok(),
+            "Failed to read from memory: {:?}",
+            read_result.err()
+        );
+
+        // Compare the read data with the original test data
+        let read_data = read_result.unwrap();
+        assert_eq!(
+            read_data, test_data,
+            "Memory read data doesn't match written data"
+        );
+
+        // Clean up
+        unsafe { free_executable_memory(address, size).expect("Failed to free memory") };
+    }
+
+    // Test writing to memory directly using write_memory
+    #[test]
+    fn test_write_memory_function() {
+        setup();
+
+        // Allocate memory for testing
+        let test_data = vec![0xC0, 0xDE, 0xCA, 0xFE, 0xBA, 0xBE];
+        let size = test_data.len();
+
+        let address =
+            unsafe { allocate_executable_memory(size) }.expect("Failed to allocate memory");
+
+        // Write data using write_memory function
+        let write_result = unsafe { write_memory(address, &test_data) };
+        assert!(
+            write_result.is_ok(),
+            "Failed to write to memory: {:?}",
+            write_result.err()
+        );
+
+        // Read back the data
+        let read_result = unsafe { read_memory(address, size) };
+        assert!(
+            read_result.is_ok(),
+            "Failed to read from memory: {:?}",
+            read_result.err()
+        );
+
+        // Compare the read data with the original test data
+        let read_data = read_result.unwrap();
+        assert_eq!(
+            read_data, test_data,
+            "Memory data doesn't match after using write_memory"
+        );
+
+        // Clean up
+        unsafe { free_executable_memory(address, size).expect("Failed to free memory") };
+    }
+
+    // Test the complete hook injection process with a mock hook
+    #[test]
+    fn test_inject_and_restore_hook() {
+        setup();
+
+        // Instead of using static mut, allocate memory that we can use for testing
+        let original_bytes = vec![0x90, 0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89];
+
+        // Allocate memory for our test "original code"
+        let mem_size = original_bytes.len();
+        let mem_address = unsafe { allocate_executable_memory(mem_size) }
+            .expect("Failed to allocate memory for original code");
+
+        // Copy our test bytes to the allocated memory
+        unsafe { copy_to_executable_memory(mem_address, &original_bytes) }
+            .expect("Failed to initialize test memory");
+
+        // Create a mock hook targeting our allocated memory
+        let mock_hook = Hook {
+            name: "test_hook".to_string(),
+            target_address: format!("{:x}", mem_address),
+            memory_content: "\\x90\\x48\\x89\\x5C\\x24\\x08\\x48\\x89".to_string(),
+            hook_function: "le_lib_echo".to_string(),
+            wait_for_file: None,
+            base_file: None,
+            target_process: None,
+        };
+
+        // Create trampoline and jumper data
+        let trampoline_data = vec![0x55, 0x48, 0x89, 0xE5, 0xFF, 0xD0, 0x5D, 0xC3]; // Simple function prologue + call + epilogue
+        let jumper_data = vec![0xE9, 0x00, 0x00, 0x00, 0x00, 0x90, 0x90, 0x90]; // JMP instruction + NOP padding
+
+        // Inject the hook
+        let inject_result = unsafe { inject_hook(&mock_hook, &trampoline_data, &jumper_data) };
+        assert!(
+            inject_result.is_ok(),
+            "Failed to inject hook: {:?}",
+            inject_result.err()
+        );
+
+        let active_hook = inject_result.unwrap();
+
+        // Verify the hook was injected by reading from the target address
+        let post_inject_memory = unsafe {
+            read_memory(mem_address, jumper_data.len())
+                .expect("Failed to read memory after injection")
+        };
+
+        // Verify that the memory was modified to contain our jumper
+        assert_eq!(
+            post_inject_memory, jumper_data,
+            "Memory was not correctly modified by hook injection"
+        );
+
+        // Verify that the original bytes were correctly saved in the active hook
+        assert_eq!(
+            active_hook.original_bytes, original_bytes,
+            "Original bytes were not correctly saved"
+        );
+
+        // Now restore the hook
+        let restore_result = unsafe { restore_hook(&active_hook) };
+        assert!(
+            restore_result.is_ok(),
+            "Failed to restore hook: {:?}",
+            restore_result.err()
+        );
+
+        // Verify the original memory was restored
+        let post_restore_memory = unsafe {
+            read_memory(mem_address, mem_size).expect("Failed to read memory after restoration")
+        };
+
+        assert_eq!(
+            post_restore_memory, original_bytes,
+            "Original memory was not correctly restored"
+        );
+
+        // Clean up allocated memory
+        unsafe { free_executable_memory(mem_address, mem_size) }
+            .expect("Failed to free test memory");
+    }
+
+    // Test handling of memory access errors
+    #[test]
+    fn test_memory_access_errors() {
+        setup();
+
+        // Try to read from an invalid address (null pointer)
+        let invalid_address = 0x0;
+        let read_result = unsafe { read_memory(invalid_address, 4) };
+
+        // This should fail because memory at address 0 shouldn't be readable
+        assert!(
+            read_result.is_err(),
+            "Reading from invalid memory should fail"
+        );
+
+        // Try to write to an invalid address
+        let write_result = unsafe { write_memory(invalid_address, &[0xDE, 0xAD, 0xBE, 0xEF]) };
+
+        // This should also fail
+        assert!(
+            write_result.is_err(),
+            "Writing to invalid memory should fail"
+        );
+    }
+
+    // Test boundary conditions for memory allocation
+    #[test]
+    fn test_memory_allocation_boundaries() {
+        setup();
+
+        // Test allocating zero bytes (should still allocate a page)
+        let zero_size_address = unsafe { allocate_executable_memory(0) };
+        assert!(
+            zero_size_address.is_ok(),
+            "Should be able to allocate zero bytes"
+        );
+
+        if let Ok(address) = zero_size_address {
+            unsafe { free_executable_memory(address, 0).expect("Failed to free zero-size memory") };
+        }
+
+        // Test allocating a large size (1MB)
+        let large_size = 1024 * 1024;
+        let large_address = unsafe { allocate_executable_memory(large_size) };
+        assert!(
+            large_address.is_ok(),
+            "Should be able to allocate large memory"
+        );
+
+        if let Ok(address) = large_address {
+            unsafe {
+                free_executable_memory(address, large_size).expect("Failed to free large memory")
+            };
+        }
     }
 }
