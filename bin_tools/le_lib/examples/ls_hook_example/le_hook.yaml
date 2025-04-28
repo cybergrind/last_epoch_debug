@@ -6,3 +6,13 @@ hooks:
     hook_function: le_lib_echo
     target_process: 'Last Epoch.exe'
     base_file: 'GameAssembly.dll'
+    align_size: 21
+    overwritten_instructions: |
+      push    rbx
+      push    rbp
+      push    rsi
+      push    r12
+      push    r13
+      push    r15
+      sub     rsp, 0x28
+      cmp     byte [rip+0x32d6031], 0x0

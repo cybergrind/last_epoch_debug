@@ -17,6 +17,8 @@ pub struct Hook {
     pub target_address: String,
     pub memory_content: String,
     pub hook_function: String,
+    pub align_size: u64,
+    pub overwritten_instructions: String,
     pub wait_for_file: Option<String>,
     pub target_process: Option<String>,
     pub base_file: Option<String>,
@@ -452,12 +454,14 @@ unsafe fn verify_memory_content(address: u64, expected_content: &str) -> bool {
 
 /// Generates assembly for the hook trampoline and jumper
 fn generate_hook_assembly(
-    hook_name: &str,
+    hook: &Hook,
     target_address: u64,
     hook_function_address: u64,
     trampoline_address: Option<u64>, // Optional trampoline address for jumper generation
 ) -> Result<(String, String), String> {
     // Get a reliable temporary directory
+    let hook_name = hook.name.replace(" ", "_");
+
     let tmp_dir = std::env::var("TMPDIR")
         .or_else(|_| std::env::var("TMP"))
         .or_else(|_| std::env::var("TEMP"))
@@ -530,14 +534,20 @@ fn generate_hook_assembly(
     pop rdx
     pop rcx
     pop rbx
-    pop rax
+    ; rax will be restored by trampoline
+    ; pop rax
+
+    ; Put overwritten instructions back
+    {}
 
     ; Jump back to the original function (after our jumper)
     mov rax, 0x{:X}
     add rax, 12    ; Skip the jumper instruction (12 bytes for a typical jmp)
     jmp rax
 "#,
-        hook_function_address, target_address
+        hook_function_address, 
+        hook.overwritten_instructions,
+        target_address
     );
 
     // Create the jumper assembly (this will replace the original code)
@@ -548,6 +558,13 @@ fn generate_hook_assembly(
     ; Jump to our trampoline
     mov rax, 0x{:X}
     jmp rax
+    ; when hook is called we will jump here
+    ; so we need to restore original rax state
+    pop rax
+    ; align to 16 bytes
+    nop
+    nop
+    nop
 "#,
             addr
         )
@@ -591,7 +608,7 @@ unsafe fn compile_and_inject_hook(hook: &Hook) -> Result<ActiveHook, String> {
 
     // Generate assembly code for trampoline (without knowing trampoline address yet)
     let (trampoline_asm_path, _) =
-        generate_hook_assembly(&hook.name, target_address, hook_function_address, None)?;
+        generate_hook_assembly(hook, target_address, hook_function_address, None)?;
 
     // Read the assembly code file
     let trampoline_asm = fs::read_to_string(&trampoline_asm_path)
@@ -632,7 +649,7 @@ unsafe fn compile_and_inject_hook(hook: &Hook) -> Result<ActiveHook, String> {
 
     // Generate jumper assembly with the actual trampoline address
     let (_, jumper_asm_path) = generate_hook_assembly(
-        &hook.name,
+        hook,
         target_address,
         hook_function_address,
         Some(trampoline_info.address),
@@ -663,7 +680,7 @@ unsafe fn compile_and_inject_hook(hook: &Hook) -> Result<ActiveHook, String> {
         }
     };
     // jumper length must be 12 bytes
-    if jumper_data.len() != 12 {
+    if jumper_data.len() != 16 {
         // Free the trampoline memory if jumper compilation fails
         unsafe {
             // use the trampoline_info to free the memory
@@ -675,9 +692,9 @@ unsafe fn compile_and_inject_hook(hook: &Hook) -> Result<ActiveHook, String> {
             .map(|b| format!("{:02X}", b))
             .collect::<Vec<String>>()
             .join(" ");
-        error!("Jumper data is not 12 bytes long, got: {}", first_bytes_str);
+        error!("Jumper data is not 16 bytes long, got: {}", first_bytes_str);
         return Err(format!(
-            "Jumper length is not 122 bytes actual size is {}",
+            "Jumper length is not 16 bytes actual size is {}",
             jumper_data.len()
         ));
     }
@@ -851,6 +868,8 @@ hooks:
     target_address: 0xDEADBEEF
     memory_content: '\x48\x89\x5C\x24\x08'  # Some example x86_64 instructions
     hook_function: le_lib_echo
+    align_size: 16
+    overwritten_instructions: '\x90\x90\x90\x90'  # NOP instructions
 "#;
 
         // Write the test yaml to the hooks config path

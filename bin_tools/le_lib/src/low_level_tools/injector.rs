@@ -40,21 +40,57 @@ pub unsafe fn inject_hook(
             };
 
         info!("Using calculated target address: 0x{:x}", target_address);
-
+        
+        // Dump the memory region before we try to modify it
+        info!("Dumping memory at hook location before modification");
+        if let Err(e) = crate::wine_memory::log_memory_hex_dump(target_address, 32, "Before hook") {
+            warn!("Failed to dump memory before hook: {}", e);
+        }
+        
         // Save the original bytes at the target address
         let original_bytes = read_memory(target_address, jumper_data.len())?;
 
         // Write the jumper code to the target address
-        write_memory(target_address, jumper_data)?;
-
-        // Create and return the active hook
-        Ok(ActiveHook {
-            name: hook.name.clone(),
-            target_address,
-            trampoline_address: trampoline_info.address,
-            hook_function_address,
-            original_bytes,
-        })
+        info!("Attempting to write {} bytes to target address 0x{:x}", jumper_data.len(), target_address);
+        match write_memory(target_address, jumper_data) {
+            Ok(_) => {
+                // Verify that the memory was actually changed
+                if let Ok(verification) = read_memory(target_address, jumper_data.len()) {
+                    if verification == jumper_data {
+                        info!("Memory write verification successful");
+                    } else {
+                        // If verification fails, show what was actually written
+                        let written_str = verification.iter()
+                            .map(|b| format!("{:02X}", b))
+                            .collect::<Vec<String>>()
+                            .join(" ");
+                        let expected_str = jumper_data.iter()
+                            .map(|b| format!("{:02X}", b))
+                            .collect::<Vec<String>>()
+                            .join(" ");
+                        warn!("Memory write verification failed:");
+                        warn!("Expected: {}", expected_str);
+                        warn!("Found:    {}", written_str);
+                    }
+                }
+                
+                // Dump the memory region after modification
+                info!("Dumping memory at hook location after modification");
+                if let Err(e) = crate::wine_memory::log_memory_hex_dump(target_address, 32, "After hook") {
+                    warn!("Failed to dump memory after hook: {}", e);
+                }
+                
+                // Create and return the active hook
+                Ok(ActiveHook {
+                    name: hook.name.clone(),
+                    target_address,
+                    trampoline_address: trampoline_info.address,
+                    hook_function_address,
+                    original_bytes,
+                })
+            },
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -430,6 +466,8 @@ mod tests {
             wait_for_file: None,
             base_file: None,
             target_process: None,
+            align_size: 21,
+            overwritten_instructions: "".to_string(),
         };
 
         // Create trampoline and jumper data
