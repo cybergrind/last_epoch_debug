@@ -19,5 +19,6 @@
         "/Metadata": true,
         "/wine_dir": true,
         "/external": true
-    }
+    },
+    "terminal.integrated.defaultProfile.linux": "bash"
 }
