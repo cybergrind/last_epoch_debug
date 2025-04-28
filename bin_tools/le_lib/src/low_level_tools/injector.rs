@@ -128,7 +128,7 @@ unsafe fn copy_to_executable_memory(address: u64, data: &[u8]) -> Result<(), Str
 /// Reads memory from a specified address
 unsafe fn read_memory(address: u64, size: usize) -> Result<Vec<u8>, String> {
     unsafe {
-        // Check if memory is accessible
+        // Check if memory is accessible - using our safer implementation now
         if !crate::hook_tools::is_memory_accessible(address, size) {
             return Err(format!(
                 "Memory at address 0x{:x} is not accessible",
@@ -140,12 +140,21 @@ unsafe fn read_memory(address: u64, size: usize) -> Result<Vec<u8>, String> {
         let ptr = address as *const u8;
         let mut buffer = Vec::with_capacity(size);
 
-        // Use a safer approach to read memory
-        for i in 0..size {
-            buffer.push(ptr::read_volatile(ptr.add(i)));
-        }
+        // Use std::panic::AssertUnwindSafe to make &mut Vec<u8> work with catch_unwind
+        let read_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            for i in 0..size {
+                buffer.push(ptr::read_volatile(ptr.add(i)));
+            }
+            buffer
+        }));
 
-        Ok(buffer)
+        match read_result {
+            Ok(result) => Ok(result),
+            Err(_) => Err(format!(
+                "Failed to safely read memory at address 0x{:x}",
+                address
+            )),
+        }
     }
 }
 
@@ -164,14 +173,14 @@ unsafe fn write_memory(address: u64, data: &[u8]) -> Result<(), String> {
         let page_size = libc::sysconf(libc::_SC_PAGESIZE) as usize;
         let page_mask = !(page_size - 1);
         let page_start = (address & page_mask as u64) as *mut libc::c_void;
-
-        // Get the current protection - prefixed with underscore since it's unused
-        let _old_protection: libc::c_int = 0;
+        let page_end = (((address + data.len() as u64 - 1) & page_mask as u64) + page_size as u64)
+            as *mut libc::c_void;
+        let region_size = (page_end as usize) - (page_start as usize);
 
         // Make the memory writable
         let result = libc::mprotect(
             page_start,
-            page_size,
+            region_size,
             libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
         );
 
@@ -182,16 +191,27 @@ unsafe fn write_memory(address: u64, data: &[u8]) -> Result<(), String> {
             ));
         }
 
-        // Write the data
-        let ptr = address as *mut u8;
-        for (i, &byte) in data.iter().enumerate() {
-            ptr::write_volatile(ptr.add(i), byte);
+        // Write the data - wrap in a catch_unwind to handle any segfaults
+        let write_result = std::panic::catch_unwind(|| {
+            let ptr = address as *mut u8;
+            for (i, &byte) in data.iter().enumerate() {
+                ptr::write_volatile(ptr.add(i), byte);
+            }
+        });
+
+        if write_result.is_err() {
+            return Err(format!(
+                "Failed to safely write memory at address 0x{:x}",
+                address
+            ));
         }
 
-        // Restore the original protection if needed
-        // In practice, game code needs to remain executable
+        // Memory barriers to ensure changes are visible
+        std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
 
-        // Flush instruction cache if necessary (not typically needed on x86/x64)
+        // Flush instruction cache by executing an empty inline assembly block
+        // This is needed on some architectures to ensure instruction cache coherency
+        std::arch::asm!("", options(nomem, nostack));
 
         Ok(())
     }

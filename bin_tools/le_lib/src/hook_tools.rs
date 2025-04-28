@@ -45,68 +45,63 @@ lazy_static! {
 
 /// Safely checks if memory at the given address is accessible
 pub fn is_memory_accessible(address: u64, size: usize) -> bool {
-    // Log the attempt for debugging
-    // info!("Checking memory accessibility at address 0x{:x} for {} bytes", address, size);
-
-    // We use a more robust method combining signal handling and proc maps
-    // First, check if the memory region is mapped in our process
-    let is_mapped = check_memory_mapped(address, size);
-    // do not use parentheses in the if statement
-    if !is_mapped {
-        // warn!("Memory region 0x{:x} - 0x{:x} is not mapped in the process", address, address + size as u64);
+    // Check for null address early
+    if address == 0 {
         return false;
     }
 
-    // If mapped, use signal handling as a second check
-    use libc::{SA_RESETHAND, c_int, sigaction, sigemptyset, sighandler_t};
-    use std::mem;
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    static MEMORY_ACCESS_FAILED: AtomicBool = AtomicBool::new(false);
-
-    extern "C" fn handle_sigsegv(_: c_int) {
-        MEMORY_ACCESS_FAILED.store(true, Ordering::SeqCst);
+    // Check if the memory region is mapped in our process
+    let is_mapped = check_memory_mapped(address, size);
+    if !is_mapped {
+        return false;
     }
 
-    unsafe {
-        // Reset the flag
-        MEMORY_ACCESS_FAILED.store(false, Ordering::SeqCst);
-
-        // Set up signal handler for SIGSEGV
-        let mut sa: sigaction = mem::zeroed();
-        sa.sa_sigaction = handle_sigsegv as sighandler_t;
-        sigemptyset(&mut sa.sa_mask);
-        sa.sa_flags = SA_RESETHAND;
-
-        // Backup old signal handler
-        let mut old_sa: sigaction = mem::zeroed();
-        if sigaction(libc::SIGSEGV, &sa, &mut old_sa) != 0 {
-            warn!("Failed to set SIGSEGV handler for memory accessibility check");
-            return false;
+    // If mapped, we still need to be careful about checking permissions
+    // Instead of directly accessing memory which might segfault,
+    // we'll use proc maps to determine if we have the right permissions
+    if let Some(perms) = get_memory_permissions(address) {
+        // We need at least read permission
+        if perms.contains('r') {
+            return true;
         }
+    }
 
-        // Try to read the memory very carefully - use volatile reads only on the first and last bytes
-        let ptr = address as *const u8;
+    false
+}
 
-        // Only check first and last byte to minimize risk
-        if !MEMORY_ACCESS_FAILED.load(Ordering::SeqCst) {
-            let _ = ptr::read_volatile(ptr);
+/// Get memory permissions from /proc/self/maps
+fn get_memory_permissions(address: u64) -> Option<String> {
+    use std::fs::File;
+    use std::io::{BufRead, BufReader};
+
+    let maps_path = "/proc/self/maps";
+    match File::open(maps_path) {
+        Ok(file) => {
+            let reader = BufReader::new(file);
+
+            for line in reader.lines().filter_map(Result::ok) {
+                // Parse address range from line like: "7f9d80617000-7f9d80619000 r-xp ..."
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    let addr_range = parts[0];
+                    let perms = parts[1];
+
+                    let addr_parts: Vec<&str> = addr_range.split('-').collect();
+                    if addr_parts.len() == 2 {
+                        if let (Ok(start), Ok(end)) = (
+                            u64::from_str_radix(addr_parts[0], 16),
+                            u64::from_str_radix(addr_parts[1], 16),
+                        ) {
+                            if address >= start && address < end {
+                                return Some(perms.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            None
         }
-
-        if size > 1 && !MEMORY_ACCESS_FAILED.load(Ordering::SeqCst) {
-            let _ = ptr::read_volatile(ptr.add(size - 1));
-        }
-
-        // Restore old signal handler
-        sigaction(libc::SIGSEGV, &old_sa, std::ptr::null_mut());
-
-        if MEMORY_ACCESS_FAILED.load(Ordering::SeqCst) {
-            warn!("SIGSEGV triggered while checking memory at 0x{:x}", address);
-            false
-        } else {
-            info!("Memory at address 0x{:x} appears to be accessible", address);
-            true
-        }
+        Err(_) => None,
     }
 }
 
@@ -114,6 +109,22 @@ pub fn is_memory_accessible(address: u64, size: usize) -> bool {
 fn check_memory_mapped(address: u64, size: usize) -> bool {
     use std::fs::File;
     use std::io::{BufRead, BufReader};
+
+    // Early check for null or very low addresses which are typically protected
+    if address < 0x1000 {
+        error!(
+            "Address 0x{:x} is too low (likely reserved/protected)",
+            address
+        );
+        return false;
+    }
+
+    // Early check for very large or suspiciously large sizes
+    if size > 1024 * 1024 * 10 {
+        // 10MB limit
+        error!("Size {} is too large for safe memory operation", size);
+        return false;
+    }
 
     let maps_path = "/proc/self/maps";
     let file = match File::open(maps_path) {
@@ -126,6 +137,11 @@ fn check_memory_mapped(address: u64, size: usize) -> bool {
 
     let reader = BufReader::new(file);
     let end_address = address + size as u64;
+
+    info!(
+        "Checking if memory region 0x{:x} - 0x{:x} is mapped",
+        address, end_address
+    );
 
     for line in reader.lines().filter_map(Result::ok) {
         // Parse address range from line like: "7f9d80617000-7f9d80619000 r-xp ..."
@@ -142,6 +158,9 @@ fn check_memory_mapped(address: u64, size: usize) -> bool {
                             "Memory region 0x{:x} - 0x{:x} is mapped in range 0x{:x} - 0x{:x}",
                             address, end_address, start, end
                         );
+                        // Also extract and log permissions
+                        let perms = line.split_whitespace().nth(1).unwrap_or("-");
+                        info!("Permissions for this memory region: {}", perms);
                         return true;
                     }
                 }
@@ -149,6 +168,10 @@ fn check_memory_mapped(address: u64, size: usize) -> bool {
         }
     }
 
+    error!(
+        "Memory region 0x{:x} - 0x{:x} is NOT mapped in process space",
+        address, end_address
+    );
     false
 }
 
