@@ -27,6 +27,9 @@ hooks:
     # file to be loaded in maps before we're trying to load the hook
     # if it is not defined, we will wait for the address to be loaded
     wait_for_file: '/home/kpi/games/SteamLibrary/steamapps/common/Last Epoch/GameAssembly.dll'
+    # if base_file is defined then real address will be relative to mapped file (note that we use only base name, not full path):
+    # real_target_address = target_address + address_of(base_file in maps)
+    base_file: 'GameAssembly.dll'
 ```
 
 TODO:

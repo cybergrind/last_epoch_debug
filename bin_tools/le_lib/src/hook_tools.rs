@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::process::Command;
 use std::ptr;
-use std::sync::Mutex;
+use std::sync::{Mutex, Once};
 
 use crate::constants::get_hooks_config_path;
 
@@ -19,6 +19,7 @@ pub struct Hook {
     pub hook_function: String,
     pub wait_for_file: Option<String>,
     pub target_process: Option<String>,
+    pub base_file: Option<String>,
 }
 
 // Structure to represent the hooks configuration
@@ -152,6 +153,47 @@ fn check_memory_mapped(address: u64, size: usize) -> bool {
     false
 }
 
+/// Get the base address of a loaded module from /proc/self/maps
+fn get_module_base_address(module_name: &str) -> Option<u64> {
+    use std::fs::File;
+    use std::io::{BufRead, BufReader};
+
+    let maps_path = "/proc/self/maps";
+    let file = match File::open(maps_path) {
+        Ok(f) => f,
+        Err(e) => {
+            error!("Failed to open {}: {}", maps_path, e);
+            return None;
+        }
+    };
+
+    let reader = BufReader::new(file);
+
+    // Look for lines containing the module name
+    for line in reader.lines().filter_map(Result::ok) {
+        if line.contains(module_name) {
+            // Parse address range from line like: "7f9d80617000-7f9d80619000 r-xp ..."
+            if let Some(addr_range) = line.split_whitespace().next() {
+                let parts: Vec<&str> = addr_range.split('-').collect();
+                if parts.len() == 2 {
+                    if let Ok(start_addr) = u64::from_str_radix(parts[0], 16) {
+                        info!(
+                            "Found module {} at base address 0x{:x}",
+                            module_name, start_addr
+                        );
+                        return Some(start_addr);
+                    }
+                }
+            }
+            // We only need the first occurrence as that's the base address
+            break;
+        }
+    }
+
+    warn!("Could not find base address for module: {}", module_name);
+    None
+}
+
 /// Loads hooks from the specified YAML configuration file
 pub fn load_hooks_config() -> Result<HooksConfig, String> {
     match fs::read_to_string(get_hooks_config_path()) {
@@ -236,6 +278,38 @@ pub fn memory_content_to_bytes(content: &str) -> Vec<u8> {
     result
 }
 
+/// Calculate the real target address, considering the base_file if specified
+fn calculate_real_target_address(hook: &Hook) -> Result<u64, String> {
+    // First parse the target address as specified in the hook
+    let parsed_address = parse_hex_address(&hook.target_address)?;
+
+    // If base_file is defined, the address is relative to the module's base address
+    if let Some(base_file) = &hook.base_file {
+        // Get the base address of the specified module
+        if let Some(base_address) = get_module_base_address(base_file) {
+            // Calculate the real address by adding the base address
+            let real_address = base_address + parsed_address;
+            info!(
+                "Hook '{}': Base address of {} is 0x{:x}, target is 0x{:x}, real address is 0x{:x}",
+                hook.name, base_file, base_address, parsed_address, real_address
+            );
+            return Ok(real_address);
+        } else {
+            return Err(format!(
+                "Could not find base module '{}' for hook '{}'. Is the module loaded?",
+                base_file, hook.name
+            ));
+        }
+    }
+
+    // If no base_file is specified, use the address as is (absolute)
+    info!(
+        "Hook '{}': Using absolute address 0x{:x}",
+        hook.name, parsed_address
+    );
+    Ok(parsed_address)
+}
+
 fn get_process_name_from_proc() -> String {
     // Read the process name from /proc/self/cmdline
     let cmdline_path = "/proc/self/cmdline";
@@ -243,16 +317,33 @@ fn get_process_name_from_proc() -> String {
     cmdline.split('\0').next().unwrap_or("unknown").to_string()
 }
 
+fn get_process_pid() -> u32 {
+    // Read the process ID from /proc/self/stat
+    let stat_path = "/proc/self/stat";
+    let stat_content = fs::read_to_string(stat_path).unwrap_or_else(|_| "0".to_string());
+    let pid_str = stat_content.split_whitespace().next().unwrap_or("0");
+    pid_str.parse::<u32>().unwrap_or(0)
+}
+
 /// Verifies memory content at the specified address matches what's expected
 unsafe fn verify_memory_content(address: u64, expected_content: &str) -> bool {
+    // Get the process name for better diagnostic information
+    let process_name = std::env::args()
+        .next()
+        .unwrap_or_else(|| "unknown".to_string());
+    let pid = get_process_pid();
+
     // Convert the expected content string to bytes
-    info!("Verifying memory content at address 0x{:x}", address);
+    info!(
+        "Process: {} (PID: {}) Verifying memory content at address 0x{:x}",
+        process_name, pid, address
+    );
     let expected_bytes = memory_content_to_bytes(expected_content);
-    let process_name = get_process_name_from_proc();
 
     info!(
-        "Process: {} Checking memory at address 0x{:x} for {} bytes",
+        "Process: {} (PID: {}) Checking memory at address 0x{:x} for {} bytes",
         process_name,
+        pid,
         address,
         expected_bytes.len()
     );
@@ -260,8 +351,8 @@ unsafe fn verify_memory_content(address: u64, expected_content: &str) -> bool {
     // First check if the memory is accessible - this is critical to avoid segfaults
     if !is_memory_accessible(address, expected_bytes.len()) {
         warn!(
-            "Memory at address 0x{:x} is not accessible, skipping content verification",
-            address
+            "Process: {} Memory at address 0x{:x} is not accessible, skipping content verification",
+            process_name, address
         );
         return false;
     }
@@ -270,21 +361,31 @@ unsafe fn verify_memory_content(address: u64, expected_content: &str) -> bool {
     let result = unsafe {
         // Use a closure to contain any potential memory access issues
         let verify_result = std::panic::catch_unwind(|| {
-            info!("Reading memory at address 0x{:x}", address);
-            let actual_bytes =
-                std::slice::from_raw_parts(address as *const u8, expected_bytes.len());
+            info!(
+                "Pid: {} Process: {} Reading memory at address 0x{:x}",
+                pid, process_name, address
+            );
+
+            // Read each byte individually for safer access
+            let mut actual_bytes = Vec::with_capacity(expected_bytes.len());
+            for i in 0..expected_bytes.len() {
+                let ptr = (address as *const u8).add(i);
+                let byte = ptr::read_volatile(ptr);
+                actual_bytes.push(byte);
+            }
+
             info!("Actual bytes read: {:02X?}", actual_bytes);
             info!("Expected bytes: {:02X?}", expected_bytes);
 
-            expected_bytes == actual_bytes
+            actual_bytes == expected_bytes
         });
 
         match verify_result {
             Ok(result) => result,
             Err(_) => {
                 error!(
-                    "Panic occurred during memory verification at address 0x{:x}",
-                    address
+                    "Process: {} Panic occurred during memory verification at address 0x{:x}",
+                    process_name, address
                 );
                 false
             }
@@ -292,11 +393,14 @@ unsafe fn verify_memory_content(address: u64, expected_content: &str) -> bool {
     };
 
     if result {
-        info!("Memory content at 0x{:x} matches expected pattern", address);
+        info!(
+            "Process: {} Memory content at 0x{:x} matches expected pattern",
+            process_name, address
+        );
     } else {
         info!(
-            "Memory content at 0x{:x} does not match expected pattern",
-            address
+            "Process: {} Memory content at 0x{:x} does not match expected pattern",
+            process_name, address
         );
     }
 
@@ -600,12 +704,17 @@ fn get_only_matching_hooks(process_name: &str) -> Vec<Hook> {
         .collect()
 }
 
+static ONCE_LOADING_LOG: Once = Once::new();
+
 /// Loads the hooks into the game
 #[unsafe(no_mangle)]
 pub extern "C" fn le_lib_load_hook() -> bool {
     // Initialize logger
     crate::initialize_logger();
-    info!("Loading hooks from {}", get_hooks_config_path());
+
+    ONCE_LOADING_LOG.call_once(|| {
+        info!("Loading hooks from {}", get_hooks_config_path());
+    });
 
     // Get the active hooks
     let mut active_hooks = match ACTIVE_HOOKS.lock() {
@@ -636,14 +745,11 @@ pub extern "C" fn le_lib_load_hook() -> bool {
             continue;
         }
 
-        // Parse the target address
-        let target_address = match parse_hex_address(&hook.target_address) {
+        // Calculate the real target address (absolute or relative to base_file)
+        let target_address = match calculate_real_target_address(hook) {
             Ok(addr) => addr,
-            Err(_) => {
-                error!(
-                    "Invalid target address for hook '{}': {}",
-                    hook.name, hook.target_address
-                );
+            Err(e) => {
+                error!("Invalid target address for hook '{}': {}", hook.name, e);
                 continue;
             }
         };
