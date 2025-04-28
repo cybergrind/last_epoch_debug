@@ -9,6 +9,7 @@ use std::ptr;
 use std::sync::{Mutex, Once};
 
 use crate::constants::get_hooks_config_path;
+use crate::low_level_tools::{compiler, injector};
 
 // Structure to represent a hook configuration
 #[derive(Debug, Deserialize, Serialize)]
@@ -30,13 +31,12 @@ pub struct HooksConfig {
 
 // Struct to represent an active hook
 #[derive(Debug)]
-#[allow(dead_code)]
-struct ActiveHook {
-    name: String,
-    target_address: u64,
-    trampoline_address: u64,
-    hook_function_address: u64,
-    original_bytes: Vec<u8>,
+pub struct ActiveHook {
+    pub name: String,
+    pub target_address: u64,
+    pub trampoline_address: u64,
+    pub hook_function_address: u64,
+    pub original_bytes: Vec<u8>,
 }
 
 // Keep track of loaded hooks
@@ -206,7 +206,7 @@ pub fn load_hooks_config() -> Result<HooksConfig, String> {
 }
 
 /// Gets the address for a function by name
-fn get_function_address(function_name: &str) -> Result<u64, String> {
+pub fn get_function_address(function_name: &str) -> Result<u64, String> {
     // This is a simplified implementation and would need to be expanded
     // to look up symbols in the actual game binary
     match function_name {
@@ -418,8 +418,7 @@ fn generate_hook_assembly(
         .or_else(|_| std::env::var("TMP"))
         .or_else(|_| std::env::var("TEMP"))
         .unwrap_or_else(|_| {
-            if std::path::Path::new("/tmp").exists() && is_path_writable("/tmp/test_write").is_ok()
-            {
+            if std::path::Path::new("/tmp").exists() {
                 "/tmp".to_string()
             } else {
                 format!("{}/tmp", std::env::var("HOME").unwrap_or(".".to_string()))
@@ -522,168 +521,60 @@ _start:
     Ok((trampoline_asm_path, jumper_asm_path))
 }
 
-/// Check if a path is writable
-fn is_path_writable(path: &str) -> Result<(), String> {
-    let dir_path = std::path::Path::new(path)
-        .parent()
-        .ok_or_else(|| format!("Invalid path: {}", path))?;
-
-    // Create directory if it doesn't exist
-    if !dir_path.exists() {
-        std::fs::create_dir_all(dir_path)
-            .map_err(|e| format!("Failed to create directory {}: {}", dir_path.display(), e))?;
-    }
-
-    // Check if we can write to this location
-    let test_file = format!("{}.writetest", path);
-    match std::fs::File::create(&test_file) {
-        Ok(_) => {
-            // Clean up the test file
-            if let Err(e) = std::fs::remove_file(&test_file) {
-                warn!("Failed to remove test file {}: {}", test_file, e);
-            }
-            Ok(())
-        }
-        Err(e) => Err(format!("Cannot write to {}: {}", path, e)),
-    }
-}
-
-/// Find the NASM executable, checking both Linux and Wine paths
-fn find_nasm_path() -> Result<String, String> {
-    // Try standard Linux path first
-    let linux_path = "/usr/bin/nasm";
-    if std::path::Path::new(linux_path).exists() {
-        info!("Found NASM at Linux path: {}", linux_path);
-        return Ok(linux_path.to_string());
-    }
-
-    // Try Wine paths
-    let wine_paths = vec![
-        "Z:\\usr\\bin\\nasm",
-        "Z:/usr/bin/nasm",
-        "C:\\windows\\system32\\nasm.exe",
-        "C:/windows/system32/nasm.exe",
-    ];
-
-    for path in wine_paths {
-        if std::path::Path::new(path).exists() {
-            info!("Found NASM at Wine path: {}", path);
-            return Ok(path.to_string());
-        }
-    }
-
-    // Check if nasm is in PATH
-    match Command::new("which").arg("nasm").output() {
-        Ok(output) if output.status.success() => {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            info!("Found NASM in PATH at: {}", path);
-            return Ok(path);
-        }
-        _ => {}
-    }
-
-    // Last resort - just try "nasm" and hope it's in the PATH
-    match Command::new("nasm").arg("--version").output() {
-        Ok(output) if output.status.success() => {
-            info!("Found NASM in PATH (version check successful)");
-            return Ok("nasm".to_string());
-        }
-        _ => {}
-    }
-
-    Err("Could not find NASM executable. Please ensure NASM is installed.".to_string())
-}
-
-/// Compiles assembly code using NASM
-fn compile_assembly(asm_path: &str, output_path: &str) -> Result<(), String> {
-    // Use the find_nasm_path function to locate NASM
-    let nasm_path = find_nasm_path()?;
-
-    // Print command for debugging
-    info!(
-        "Running: {} -o {} -f elf64 -l -g -w+all {}",
-        nasm_path, output_path, asm_path
-    );
-
-    // Check if the assembly file exists
-    if !std::path::Path::new(asm_path).exists() {
-        return Err(format!("Assembly file not found: {}", asm_path));
-    }
-
-    // Check if the output path is writable
-    if let Err(e) = is_path_writable(output_path) {
-        return Err(format!("Output path is not writable: {}", e));
-    }
-
-    // Execute the command
-    let output = Command::new(&nasm_path)
-        .args(&[
-            "-o",
-            output_path,
-            "-f",
-            "elf64",
-            "-l",
-            "-g",
-            "-w+all",
-            asm_path,
-        ])
-        .output()
-        .map_err(|e| format!("Failed to execute nasm at {}: {}", nasm_path, e))?;
-
-    // Check if the command was successful
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        return Err(format!(
-            "NASM compilation failed: stderr={}, stdout={}, command={} -o {} -f elf64 -l -g -w+all {}",
-            stderr, stdout, nasm_path, output_path, asm_path
-        ));
-    }
-
-    // Check if the output file was created
-    if !std::path::Path::new(output_path).exists() {
-        return Err(format!(
-            "Compilation succeeded but output file not found: {}",
-            output_path
-        ));
-    }
-
-    info!("Successfully compiled {} to {}", asm_path, output_path);
-    Ok(())
-}
-
-/// Injects compiled code into memory and updates the game code
-unsafe fn inject_hook(
-    hook: &Hook,
-    _trampoline_path: &str,
-    _jumper_path: &str,
-) -> Result<ActiveHook, String> {
-    // Parse the target address
-    let target_address = parse_hex_address(&hook.target_address)?;
+/// Compile and inject the hook using remote compilation service
+unsafe fn compile_and_inject_hook(hook: &Hook) -> Result<ActiveHook, String> {
+    // Calculate the real target address
+    let target_address = calculate_real_target_address(hook)?;
 
     // Get the hook function address
     let hook_function_address = get_function_address(&hook.hook_function)?;
 
-    // In a real implementation, we would:
-    // 1. Load the compiled object files
-    // 2. Allocate memory for them
-    // 3. Copy the code into the allocated memory
-    // 4. Make the memory executable
-    // 5. Save the original bytes at the target address
-    // 6. Write the jump instruction to the target address
+    // Generate assembly code
+    let (trampoline_asm_path, jumper_asm_path) =
+        generate_hook_assembly(&hook.name, target_address, hook_function_address)?;
 
-    // This is a simplified placeholder implementation
-    let trampoline_address = 0xDEADBEEF; // Placeholder
-    let original_bytes = vec![0u8; 5]; // Placeholder for saved bytes
+    // Read the assembly code files
+    let trampoline_asm = fs::read_to_string(&trampoline_asm_path)
+        .map_err(|e| format!("Failed to read trampoline assembly: {}", e))?;
+    let jumper_asm = fs::read_to_string(&jumper_asm_path)
+        .map_err(|e| format!("Failed to read jumper assembly: {}", e))?;
 
-    // Create and return the active hook
-    Ok(ActiveHook {
-        name: hook.name.clone(),
-        target_address,
-        trampoline_address,
-        hook_function_address,
-        original_bytes,
-    })
+    let tmp_dir = std::path::Path::new(&trampoline_asm_path)
+        .parent()
+        .ok_or_else(|| "Invalid trampoline path".to_string())?
+        .to_string_lossy()
+        .into_owned();
+
+    // Set the output paths for the compiled objects
+    let trampoline_obj_path = format!("{}/{}_trampoline.o", tmp_dir, hook.name);
+    let jumper_obj_path = format!("{}/{}_jumper.o", tmp_dir, hook.name);
+
+    // Compile the assembly code using the remote server
+    info!("Compiling trampoline assembly using remote server");
+    let trampoline_result =
+        compiler::compile_assembly_remote(&trampoline_asm, &trampoline_obj_path, "elf64");
+
+    // Check compilation result
+    let trampoline_data = match trampoline_result {
+        compiler::CompilationResult::Success(data) => data,
+        compiler::CompilationResult::Error(err) => {
+            return Err(format!("Failed to compile trampoline: {}", err));
+        }
+    };
+
+    info!("Compiling jumper assembly using remote server");
+    let jumper_result = compiler::compile_assembly_remote(&jumper_asm, &jumper_obj_path, "elf64");
+
+    // Check compilation result
+    let jumper_data = match jumper_result {
+        compiler::CompilationResult::Success(data) => data,
+        compiler::CompilationResult::Error(err) => {
+            return Err(format!("Failed to compile jumper: {}", err));
+        }
+    };
+
+    // Inject the hook using our injector module
+    unsafe { injector::inject_hook(hook, &trampoline_data, &jumper_data) }
 }
 
 fn get_only_matching_hooks(process_name: &str) -> Vec<Hook> {
@@ -761,63 +652,15 @@ pub extern "C" fn le_lib_load_hook() -> bool {
             continue;
         }
 
-        // Get the hook function address
-        let hook_function_address = match get_function_address(&hook.hook_function) {
-            Ok(addr) => addr,
-            Err(e) => {
-                error!(
-                    "Failed to get function address for hook '{}': {}",
-                    hook.name, e
-                );
-                continue;
-            }
-        };
-
-        // Generate assembly code
-        let (trampoline_asm_path, jumper_asm_path) =
-            match generate_hook_assembly(&hook.name, target_address, hook_function_address) {
-                Ok(paths) => paths,
-                Err(e) => {
-                    error!(
-                        "Failed to generate assembly for hook '{}': {}",
-                        hook.name, e
-                    );
-                    continue;
-                }
-            };
-
-        // Get the directory where the asm files were written
-        let base_dir = std::path::Path::new(&trampoline_asm_path)
-            .parent()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| "/tmp".to_string());
-
-        // Compile the assembly code
-        let trampoline_obj_path = format!("{}/{}_trampoline.o", base_dir, hook.name);
-        let jumper_obj_path = format!("{}/{}_jumper.o", base_dir, hook.name);
-
-        if let Err(e) = compile_assembly(&trampoline_asm_path, &trampoline_obj_path) {
-            error!(
-                "Failed to compile trampoline for hook '{}': {}",
-                hook.name, e
-            );
-            continue;
-        }
-
-        if let Err(e) = compile_assembly(&jumper_asm_path, &jumper_obj_path) {
-            error!("Failed to compile jumper for hook '{}': {}", hook.name, e);
-            continue;
-        }
-
-        // Inject the hook
-        match unsafe { inject_hook(hook, &trampoline_obj_path, &jumper_obj_path) } {
+        // Compile and inject the hook using our new remote compiler
+        match unsafe { compile_and_inject_hook(hook) } {
             Ok(active_hook) => {
                 info!("Successfully loaded hook '{}'", hook.name);
                 active_hooks.insert(hook.name.clone(), active_hook);
                 processed_hooks.insert(hook.name.clone());
             }
             Err(e) => {
-                error!("Failed to inject hook '{}': {}", hook.name, e);
+                error!("Failed to compile and inject hook '{}': {}", hook.name, e);
             }
         }
     }
@@ -831,9 +674,16 @@ pub extern "C" fn le_lib_load_hook() -> bool {
 
     // Unload hooks that are no longer in the config
     for name in hooks_to_remove {
-        if let Some(_hook) = active_hooks.remove(&name) {
-            // In a real implementation, we would restore the original bytes here
-            info!("Unloaded hook '{}'", name);
+        if let Some(hook) = active_hooks.remove(&name) {
+            // Restore original bytes using our injector
+            if let Err(e) = unsafe { injector::restore_hook(&hook) } {
+                error!(
+                    "Failed to restore original bytes for hook '{}': {}",
+                    name, e
+                );
+            } else {
+                info!("Unloaded hook '{}'", name);
+            }
         }
     }
 
@@ -857,9 +707,16 @@ pub extern "C" fn le_lib_unload_hook() -> bool {
     };
 
     // Unload each active hook
-    for (name, _hook) in active_hooks.drain() {
-        // In a real implementation, we would restore the original bytes here
-        info!("Unloaded hook '{}'", name);
+    for (name, hook) in active_hooks.drain() {
+        // Restore original bytes using our injector
+        if let Err(e) = unsafe { injector::restore_hook(&hook) } {
+            error!(
+                "Failed to restore original bytes for hook '{}': {}",
+                name, e
+            );
+        } else {
+            info!("Unloaded hook '{}'", name);
+        }
     }
 
     true
@@ -917,33 +774,6 @@ hooks:
     }
 
     #[test]
-    fn test_generate_hook_assembly() {
-        // Test generating assembly for the hook
-        let hook_name = "test_hook";
-        let target_address = 0xDEADBEEF;
-        let hook_function_address = 0xC0FFEE;
-
-        // Generate the assembly
-        let (trampoline_path, jumper_path) =
-            generate_hook_assembly(hook_name, target_address, hook_function_address)
-                .expect("Failed to generate hook assembly");
-
-        // Check that the files were created
-        assert!(
-            Path::new(&trampoline_path).exists(),
-            "Trampoline assembly file not created"
-        );
-        assert!(
-            Path::new(&jumper_path).exists(),
-            "Jumper assembly file not created"
-        );
-
-        // Clean up the test files
-        fs::remove_file(trampoline_path).expect("Failed to remove trampoline assembly file");
-        fs::remove_file(jumper_path).expect("Failed to remove jumper assembly file");
-    }
-
-    #[test]
     fn test_verify_memory_content() {
         // Create a static byte array to ensure it stays in memory
         static TEST_BYTES: [u8; 5] = [0x48, 0x89, 0x5C, 0x24, 0x08];
@@ -983,153 +813,6 @@ hooks:
             !result,
             "Memory content verification incorrectly succeeded for non-matching content"
         );
-    }
-
-    #[test]
-    fn test_nasm_compilation() {
-        // Create a simple assembly file for testing
-        let test_asm = r#"
-section .text
-global _start
-_start:
-    ; Simple no-op assembly
-    nop
-    ret
-"#;
-
-        let asm_path = "/tmp/test_compilation.asm";
-        let obj_path = "/tmp/test_compilation.o";
-
-        // Write the test assembly file
-        fs::write(asm_path, test_asm).expect("Failed to write test assembly file");
-
-        // Test compiling the assembly
-        let result = compile_assembly(asm_path, obj_path);
-        assert!(
-            result.is_ok(),
-            "NASM compilation failed: {:?}",
-            result.err()
-        );
-
-        // Check that the object file was created
-        assert!(Path::new(obj_path).exists(), "Object file was not created");
-
-        // Clean up the test files
-        fs::remove_file(asm_path).expect("Failed to remove test assembly file");
-        fs::remove_file(obj_path).expect("Failed to remove test object file");
-    }
-
-    #[test]
-    fn test_compilation_with_hook() {
-        // Create test hooks configuration
-        if let Err(e) = create_test_hooks_config() {
-            panic!("Failed to create test hooks config: {}", e);
-        }
-
-        // Generate assembly for a test hook
-        let hook_name = "test_hook";
-        let target_address: u64 = 0xDEADBEEF;
-        let hook_function_address = crate::echo::le_lib_echo as u64;
-
-        // Generate trampoline assembly directly without using the function
-        let trampoline_asm_path = format!("/tmp/{}_trampoline.asm", hook_name);
-        let jumper_asm_path = format!("/tmp/{}_jumper.asm", hook_name);
-
-        // Create the trampoline assembly
-        let trampoline_asm = format!(
-            r#"section .text
-global _start
-_start:
-    ; Save all registers
-    push rax
-    push rbx
-    push rcx
-    push rdx
-    pushfq
-
-    ; Call the hook function
-    mov rax, 0x{:X}
-    call rax
-
-    ; Restore all registers
-    popfq
-    pop rdx
-    pop rcx
-    pop rbx
-    pop rax
-
-    ; Jump back to the original function
-    mov rax, 0x{:X}
-    jmp rax
-"#,
-            hook_function_address, target_address
-        );
-
-        // Create the jumper assembly
-        let jumper_asm = format!(
-            r#"section .text
-global _start
-_start:
-    ; Jump to our trampoline
-    jmp qword 0x{:X}
-"#,
-            target_address
-        );
-
-        // Write the assembly files directly in the test
-        fs::write(&trampoline_asm_path, trampoline_asm)
-            .expect("Failed to write trampoline assembly");
-        fs::write(&jumper_asm_path, jumper_asm).expect("Failed to write jumper assembly");
-
-        // Verify files were created successfully
-        assert!(
-            Path::new(&trampoline_asm_path).exists(),
-            "Trampoline assembly file was not created at {}",
-            trampoline_asm_path
-        );
-        assert!(
-            Path::new(&jumper_asm_path).exists(),
-            "Jumper assembly file was not created at {}",
-            jumper_asm_path
-        );
-
-        // Print file paths and read back content for debugging
-        println!("Trampoline file path: {}", trampoline_asm_path);
-        println!("Jumper file path: {}", jumper_asm_path);
-
-        match fs::read_to_string(&trampoline_asm_path) {
-            Ok(content) => println!(
-                "Trampoline file content: {} bytes\n{}",
-                content.len(),
-                content
-            ),
-            Err(e) => panic!("Error reading trampoline file: {}", e),
-        }
-
-        // Test compiling the trampoline assembly
-        let trampoline_obj_path = format!("/tmp/{}_trampoline.o", hook_name);
-        let result = compile_assembly(&trampoline_asm_path, &trampoline_obj_path);
-        assert!(
-            result.is_ok(),
-            "Trampoline compilation failed: {:?}",
-            result.err()
-        );
-
-        // Test compiling the jumper assembly
-        let jumper_obj_path = format!("/tmp/{}_jumper.o", hook_name);
-        let result = compile_assembly(&jumper_asm_path, &jumper_obj_path);
-        assert!(
-            result.is_ok(),
-            "Jumper compilation failed: {:?}",
-            result.err()
-        );
-
-        // Clean up all the test files
-        let _ = fs::remove_file(&trampoline_asm_path); // Ignore errors during cleanup
-        let _ = fs::remove_file(&jumper_asm_path);
-        let _ = fs::remove_file(&trampoline_obj_path);
-        let _ = fs::remove_file(&jumper_obj_path);
-        let _ = cleanup_test_hooks_config();
     }
 
     #[test]

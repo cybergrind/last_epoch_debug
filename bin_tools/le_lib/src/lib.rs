@@ -10,6 +10,7 @@ pub mod constants;
 pub mod echo;
 pub mod hook_tools;
 pub mod lib_init;
+pub mod low_level_tools;
 pub mod wine_hooks;
 
 static INIT: Once = Once::new();
