@@ -9,6 +9,7 @@ use std::sync::{Mutex, Once};
 
 use crate::constants::get_hooks_config_path;
 use crate::low_level_tools::{compiler, injector};
+use crate::system_tools::MEMORY_MAP;
 
 // Structure to represent a hook configuration
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -197,45 +198,12 @@ fn check_memory_mapped(address: u64, size: usize) -> bool {
     false
 }
 
-/// Get the base address of a loaded module from /proc/self/maps
 fn get_module_base_address(module_name: &str) -> Option<u64> {
-    use std::fs::File;
-    use std::io::{BufRead, BufReader};
-
-    let maps_path = "/proc/self/maps";
-    let file = match File::open(maps_path) {
-        Ok(f) => f,
-        Err(e) => {
-            error!("Failed to open {}: {}", maps_path, e);
-            return None;
-        }
-    };
-
-    let reader = BufReader::new(file);
-
-    // Look for lines containing the module name
-    for line in reader.lines().filter_map(Result::ok) {
-        if line.contains(module_name) {
-            // Parse address range from line like: "7f9d80617000-7f9d80619000 r-xp ..."
-            if let Some(addr_range) = line.split_whitespace().next() {
-                let parts: Vec<&str> = addr_range.split('-').collect();
-                if parts.len() == 2 {
-                    if let Ok(start_addr) = u64::from_str_radix(parts[0], 16) {
-                        info!(
-                            "Found module {} at base address 0x{:x}",
-                            module_name, start_addr
-                        );
-                        return Some(start_addr);
-                    }
-                }
-            }
-            // We only need the first occurrence as that's the base address
-            break;
-        }
-    }
-
-    warn!("Could not find base address for module: {}", module_name);
-    None
+    MEMORY_MAP
+        .lock()
+        .unwrap()
+        .get_entry_by_name(module_name)
+        .and_then(|entry| Some(entry.get_address()))
 }
 
 /// Loads hooks from the specified YAML configuration file
@@ -522,7 +490,6 @@ fn generate_hook_assembly(
     ; create new stack frame
     push rbp
     mov rbp, rsp
-
 
     ; Call the hook function
     mov rax, 0x{:X}

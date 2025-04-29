@@ -11,6 +11,7 @@ pub mod echo;
 pub mod hook_tools;
 pub mod lib_init;
 pub mod low_level_tools;
+pub mod system_tools;
 pub mod wine_hooks;
 pub mod wine_memory; // Add new module for Wine memory operations
 

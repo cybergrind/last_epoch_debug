@@ -20,5 +20,8 @@
         "/wine_dir": true,
         "/external": true
     },
-    "terminal.integrated.defaultProfile.linux": "bash"
+    "terminal.integrated.defaultProfile.linux": "bash",
+    "rust-analyzer.linkedProjects": [
+        "./bin_tools/le_lib/Cargo.toml",
+    ]
 }

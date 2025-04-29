@@ -3,11 +3,10 @@ use crate::hook_tools::{
 };
 use crate::lib_init::HOOK_MMAP_CALL;
 use crate::lib_init::notify_dll_loaded;
+use crate::system_tools::maps; // Import memory map module without MEMORY_MAP
 use lazy_static::lazy_static;
 use log::{debug, error, info, warn};
 use std::collections::HashSet;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
 use std::os::raw::{c_char, c_int, c_long, c_void};
 use std::path::Path;
 use std::sync::{Mutex, Once};
@@ -88,65 +87,46 @@ pub unsafe extern "C" fn mmap(
     result
 }
 
-// Scan /proc/<pid>/maps for new loaded modules
+// Scan for new loaded modules using system_tools::maps
 fn scan_proc_maps() {
-    let pid = std::process::id();
-    let maps_path = format!("/proc/{}/maps", pid);
-
-    if !Path::new(&maps_path).exists() {
-        error!("Could not find process maps at {}", maps_path);
-        return;
-    }
-
-    let file = match File::open(&maps_path) {
-        Ok(f) => f,
-        Err(e) => {
-            error!("Failed to open {}: {}", maps_path, e);
-            return;
-        }
-    };
-
-    let reader = BufReader::new(file);
+    // Use the MemoryMap's thread-safe scan method
+    let new_entries = maps::MemoryMap::scan();
     let mut known_modules = KNOWN_MODULES.lock().unwrap();
 
-    for line in reader.lines().filter_map(Result::ok) {
-        if let Some((addr_range, path)) = parse_maps_line(&line) {
-            // Skip entries that don't have real paths
-            if path.is_empty() || path.starts_with('[') || path.contains("SYSV") {
-                continue;
-            }
-
-            process_module(&path, addr_range, &mut known_modules);
+    // Process each memory map entry
+    for entry in new_entries {
+        // Skip entries that don't have real paths
+        let path = entry.get_pathname();
+        if path.is_empty() || path.starts_with('[') || path.contains("SYSV") {
+            continue;
         }
+
+        process_module(path, entry.get_address(), &mut known_modules);
     }
 }
 
-// Parse a single line from /proc/<pid>/maps
-fn parse_maps_line(content: &str) -> Option<(&str, String)> {
-    // Format: address perms offset dev inode pathname
-    // Example: 7f9d80617000-7f9d80619000 r-xp 00000000 08:01 2097666 /lib/x86_64-linux-gnu/ld-2.31.so
-    let parts: Vec<&str> = content.split_whitespace().collect();
-    if parts.len() < 6 {
-        // No path in this line
-        return None;
+// Function to scan loaded modules at startup - uses direct scan to avoid initialization issues
+fn scan_loaded_modules() {
+    info!("Performing initial scan of loaded modules");
+
+    // Use direct scanning during initialization to avoid potential mutex issues
+    let new_entries = maps::MemoryMap::scan_direct();
+    let mut known_modules = KNOWN_MODULES.lock().unwrap();
+
+    // Process each memory map entry
+    for entry in new_entries {
+        // Skip entries that don't have real paths
+        let path = entry.get_pathname();
+        if path.is_empty() || path.starts_with('[') || path.contains("SYSV") {
+            continue;
+        }
+
+        process_module(path, entry.get_address(), &mut known_modules);
     }
-
-    // Get address range (first column)
-    let addr_range = parts[0];
-
-    // The path starts from the 6th column (index 5)
-    // If there are more than 6 parts, then the path contains spaces
-    let path = if parts.len() > 6 {
-        parts[5..].join(" ")
-    } else {
-        parts[5].to_string()
-    };
-
-    Some((addr_range, path))
 }
 
 // Process a module found in memory maps
-fn process_module(path: &str, addr_range: &str, known_modules: &mut HashSet<String>) {
+fn process_module(path: &str, address: u64, known_modules: &mut HashSet<String>) {
     // Only consider Wine/Proton DLLs or potentially loaded game DLLs
     if !is_target_module(path) || known_modules.contains(path) {
         return;
@@ -164,29 +144,16 @@ fn process_module(path: &str, addr_range: &str, known_modules: &mut HashSet<Stri
         .and_then(|name| name.to_str())
         .unwrap_or(path);
 
-    // Get the base address from the memory mapping
-    if let Some(addr) = parse_address(addr_range) {
-        notify_dll_loaded(base_name, addr);
+    // Notify that a DLL has been loaded with its address
+    notify_dll_loaded(base_name, address as *mut c_void);
 
-        // Check if any pending hooks are waiting for this file
-        check_pending_hooks_for_file(path);
-    }
+    // Check if any pending hooks are waiting for this file
+    check_pending_hooks_for_file(path);
 }
 
 // Check if the module is a target we want to track
 fn is_target_module(path: &str) -> bool {
     path.contains(".dll") || path.contains(".so") || path.contains(".exe")
-}
-
-// Parse a memory address from the address range string
-fn parse_address(addr_range: &str) -> Option<*mut c_void> {
-    let addr_parts: Vec<&str> = addr_range.split('-').collect();
-    if addr_parts.len() == 2 {
-        if let Ok(addr) = usize::from_str_radix(addr_parts[0], 16) {
-            return Some(addr as *mut c_void);
-        }
-    }
-    None
 }
 
 // Check if any pending hooks are waiting for this file to be loaded
@@ -335,12 +302,6 @@ unsafe fn verify_memory_content(address: u64, expected_content: &str) -> bool {
     result
 }
 
-// Function to scan loaded modules at startup
-fn scan_loaded_modules() {
-    info!("Performing initial scan of loaded modules");
-    scan_proc_maps();
-}
-
 // Function to find and hook the mmap syscall
 fn hook_mmap_syscall() -> bool {
     // On Linux, we'll use libcall to hook the mmap system call
@@ -366,6 +327,7 @@ fn hook_mmap_syscall() -> bool {
 // Initialize the hooks
 pub fn initialize_wine_hooks() -> bool {
     use std::env;
+    use std::panic::{self, AssertUnwindSafe};
 
     // Check environment variable for HOOK_MMAP_CALL setting
     let hook_mmap = env::var("HOOK_MMAP_CALL")
@@ -373,53 +335,93 @@ pub fn initialize_wine_hooks() -> bool {
         .unwrap_or(false);
 
     // Store the setting in our global variable
-    *HOOK_MMAP_CALL.lock().unwrap() = hook_mmap;
+    match HOOK_MMAP_CALL.lock() {
+        Ok(mut guard) => {
+            *guard = hook_mmap;
+        }
+        Err(e) => {
+            // This is unlikely to happen, but handle it gracefully
+            warn!("Failed to set HOOK_MMAP_CALL: {}", e);
+        }
+    }
 
     // Load hooks configuration and store hooks with wait_for_file
-    if let Ok(config) = load_hooks_config() {
-        let mut pending_hooks = PENDING_HOOKS.lock().unwrap();
-        for hook in config.hooks {
-            if let Some(wait_file) = &hook.wait_for_file {
-                info!(
-                    "Registered hook '{}' waiting for file: {}",
-                    hook.name, wait_file
-                );
-                pending_hooks.push(hook);
-            }
-        }
+    // Wrap in a catch_unwind to prevent initialization failures from bringing down the whole process
+    if let Err(e) = panic::catch_unwind(AssertUnwindSafe(|| {
+        if let Ok(config) = load_hooks_config() {
+            let mut pending_hooks = match PENDING_HOOKS.lock() {
+                Ok(guard) => guard,
+                Err(e) => {
+                    warn!("Failed to lock PENDING_HOOKS: {}", e);
+                    return;
+                }
+            };
 
-        if !pending_hooks.is_empty() {
-            info!(
-                "Loaded {} pending hooks that are waiting for files",
-                pending_hooks.len()
-            );
+            for hook in config.hooks {
+                if let Some(wait_file) = &hook.wait_for_file {
+                    info!(
+                        "Registered hook '{}' waiting for file: {}",
+                        hook.name, wait_file
+                    );
+                    pending_hooks.push(hook);
+                }
+            }
+
+            if !pending_hooks.is_empty() {
+                info!(
+                    "Loaded {} pending hooks that are waiting for files",
+                    pending_hooks.len()
+                );
+            }
+        } else {
+            warn!("Could not load hooks configuration during wine_hooks initialization");
         }
-    } else {
-        warn!("Could not load hooks configuration during wine_hooks initialization");
+    })) {
+        // If there was a panic in the hook loading code, log it but continue
+        warn!("Panic during hook configuration loading: {:?}", e);
     }
 
     info!("Initializing mmap syscall hook.");
     let mut success = false;
 
-    HOOK_INITIALIZED.call_once(|| {
-        // Hook the mmap syscall
-        success = hook_mmap_syscall();
-
-        if success {
-            info!("Linux memory mapping hooks initialized successfully");
-            if hook_mmap {
-                info!("HOOK_MMAP_CALL is enabled. Scanning for loaded modules.");
-                scan_loaded_modules();
+    // Wrap the initialization in a catch_unwind to prevent panics
+    if let Err(e) = panic::catch_unwind(AssertUnwindSafe(|| {
+        HOOK_INITIALIZED.call_once(|| {
+            // Hook the mmap syscall - safe even if it fails
+            match hook_mmap_syscall() {
+                true => {
+                    info!("Linux memory mapping hooks initialized successfully");
+                    if hook_mmap {
+                        info!("HOOK_MMAP_CALL is enabled. Scanning for loaded modules.");
+                        // This calls our safer scan_loaded_modules
+                        if let Err(e) = panic::catch_unwind(AssertUnwindSafe(|| {
+                            scan_loaded_modules();
+                        })) {
+                            warn!("Panic occurred during initial module scanning: {:?}", e);
+                        }
+                    }
+                    success = true;
+                }
+                false => {
+                    error!("Failed to initialize Linux memory mapping hooks");
+                }
             }
-        } else {
-            error!("Failed to initialize Linux memory mapping hooks");
-        }
-    });
+        });
+    })) {
+        warn!("Panic occurred during hook initialization: {:?}", e);
+        return false;
+    }
 
-    if !hook_mmap {
+    if !hook_mmap && success {
         info!("HOOK_MMAP_CALL is disabled (default). Starting periodic module scanner.");
-        start_module_scanner();
-    } else {
+        // Start module scanner in a separate thread to avoid blocking
+        if let Err(e) = panic::catch_unwind(AssertUnwindSafe(|| {
+            start_module_scanner();
+        })) {
+            warn!("Failed to start module scanner: {:?}", e);
+            success = false;
+        }
+    } else if hook_mmap {
         info!("HOOK_MMAP_CALL is enabled. No periodic scanner started.");
     }
 
