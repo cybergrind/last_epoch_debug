@@ -1,8 +1,10 @@
 use log::{error, info, warn};
 use std::ptr;
 
-use crate::hook_tools::ActiveHook;
-use crate::hook_tools::Hook;
+use crate::low_level_tools::hook_tools::{
+    ActiveHook, Hook, get_function_address, get_memory_permissions, is_memory_accessible,
+    is_wine_process, parse_hex_address,
+};
 
 /// Information about a written trampoline
 pub struct TrampolineInfo {
@@ -27,17 +29,16 @@ pub unsafe fn inject_hook(
 
         // We don't need to parse the target address here - the caller should provide the real address
         // that has already been properly calculated with base offset applied if needed
-        let target_address = match crate::hook_tools::parse_hex_address(&hook.target_address) {
+        let target_address = match parse_hex_address(&hook.target_address) {
             Ok(addr) => addr,
             Err(e) => return Err(format!("Failed to parse target address: {}", e)),
         };
 
         // Get the hook function address
-        let hook_function_address =
-            match crate::hook_tools::get_function_address(&hook.hook_function) {
-                Ok(addr) => addr,
-                Err(e) => return Err(format!("Failed to get hook function address: {}", e)),
-            };
+        let hook_function_address = match get_function_address(&hook.hook_function) {
+            Ok(addr) => addr,
+            Err(e) => return Err(format!("Failed to get hook function address: {}", e)),
+        };
 
         info!("Using calculated target address: 0x{:x}", target_address);
 
@@ -175,7 +176,7 @@ unsafe fn copy_to_executable_memory(address: u64, data: &[u8]) -> Result<(), Str
 /// Reads memory from a specified address
 unsafe fn read_memory(address: u64, size: usize) -> Result<Vec<u8>, String> {
     // Check if we're running in a Wine process
-    if crate::hook_tools::is_wine_process() {
+    if is_wine_process() {
         // Use special Wine-safe memory reading method that bypasses protection mechanisms
         return crate::wine_memory::safe_read_memory(address, size);
     }
@@ -183,7 +184,7 @@ unsafe fn read_memory(address: u64, size: usize) -> Result<Vec<u8>, String> {
     unsafe {
         // Standard Linux memory access for non-Wine processes
         // Check if memory is accessible - using our safer implementation
-        if !crate::hook_tools::is_memory_accessible(address, size) {
+        if !is_memory_accessible(address, size) {
             return Err(format!(
                 "Memory at address 0x{:x} is not accessible",
                 address
@@ -215,7 +216,7 @@ unsafe fn read_memory(address: u64, size: usize) -> Result<Vec<u8>, String> {
 /// Writes data to a memory address, handling memory protection changes
 unsafe fn write_memory(address: u64, data: &[u8]) -> Result<(), String> {
     // Check if we're running in a Wine process
-    if crate::hook_tools::is_wine_process() {
+    if is_wine_process() {
         // Use special Wine-safe memory writing method that bypasses protection mechanisms
         return crate::wine_memory::safe_write_memory(address, data);
     }
@@ -230,7 +231,7 @@ unsafe fn write_memory(address: u64, data: &[u8]) -> Result<(), String> {
         let region_size = (page_end as usize) - (page_start as usize);
 
         // Get the current memory permissions before changing them
-        if let Some(perms) = crate::hook_tools::get_memory_permissions(address) {
+        if let Some(perms) = get_memory_permissions(address) {
             info!("Current memory permissions at 0x{:x}: {}", address, perms);
         }
 

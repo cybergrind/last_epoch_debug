@@ -2,6 +2,7 @@
 // This module isolates functionality that interfaces with system-level operations
 
 pub mod compiler;
+pub mod hook_tools;
 pub mod injector;
 
 // Re-export key functions for convenience

@@ -1,8 +1,9 @@
-use crate::hook_tools::{
-    Hook, is_memory_accessible, load_hooks_config, memory_content_to_bytes, parse_hex_address,
-};
 use crate::lib_init::HOOK_MMAP_CALL;
 use crate::lib_init::notify_dll_loaded;
+use crate::low_level_tools::hook_tools::{
+    Hook, is_memory_accessible, le_lib_load_hook, load_hooks_config, memory_content_to_bytes,
+    parse_hex_address,
+};
 use crate::system_tools::maps; // Import memory map module without MEMORY_MAP
 use lazy_static::lazy_static;
 use log::{debug, error, info, warn};
@@ -11,8 +12,6 @@ use std::os::raw::{c_char, c_int, c_long, c_void};
 use std::path::Path;
 use std::sync::{Mutex, Once};
 use std::time::{Duration, Instant};
-
-use crate::hook_tools::le_lib_load_hook;
 
 // Define mmap syscall types and constants
 type MmapFunc = unsafe extern "C" fn(
@@ -241,7 +240,7 @@ fn attempt_apply_hook(hook: &Hook) {
         "Memory content verified for hook '{}', calling le_lib_load_hook to apply hook",
         hook.name
     );
-    crate::hook_tools::le_lib_load_hook();
+    le_lib_load_hook();
 }
 
 // Helper function to verify memory content at a specific address

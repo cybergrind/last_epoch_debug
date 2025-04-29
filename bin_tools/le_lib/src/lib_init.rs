@@ -9,8 +9,8 @@ use std::sync::{Mutex, Once};
 
 // local imports
 use crate::echo::le_lib_echo;
-use crate::hook_tools::load_hooks_config;
 use crate::initialize_logger;
+use crate::low_level_tools::hook_tools::load_hooks_config;
 use crate::wine_hooks::initialize_wine_hooks;
 
 // Type for hook function pointers

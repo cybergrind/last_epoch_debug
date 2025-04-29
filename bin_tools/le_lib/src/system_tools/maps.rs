@@ -263,6 +263,21 @@ impl MemoryMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lazy_static::lazy_static;
+
+    use std::fs::{File, create_dir_all};
+    use std::path::Path;
+
+    // create "/tmp/le_test_dir"
+    lazy_static! {
+        static ref test_dir: &'static Path = {
+            let dir = Path::new("/tmp/le_test_dir");
+            if !dir.exists() {
+                create_dir_all(dir).unwrap();
+            }
+            dir
+        };
+    }
 
     #[test]
     fn test_add_new_entry() {
@@ -392,9 +407,16 @@ mod tests {
         use memmap2::Mmap;
         use uuid::Uuid;
 
-        let file_path = format!("/tmp/mmap_test_{}", Uuid::new_v4());
+        let file_name = format!("mmap_test_{}", Uuid::new_v4());
+        let file_path = test_dir.join(file_name);
         // create the file with 4096 bytes
-        let file = std::fs::File::open(&file_path).unwrap();
+
+        let file = File::options()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(&file_path)
+            .unwrap();
         let _ = file.set_len(4096).unwrap();
 
         let _mmap = unsafe { Mmap::map(&file).unwrap() };
@@ -403,8 +425,20 @@ mod tests {
         assert!(new_entries.len() == 1, "Scan should return new entries");
         let entry = new_entries.get(0).unwrap();
         assert!(
-            entry.pathname == file_path,
+            entry.pathname == file_path.to_str().unwrap(),
             "Entry should match the mmaped file"
         );
+        match MEMORY_MAP.lock() {
+            Ok(map) => {
+                let only_name = file_path.file_name().unwrap().to_str().unwrap();
+                assert_eq!(
+                    map.get_entry_by_name(only_name).unwrap().address,
+                    entry.address
+                );
+            }
+            Err(e) => {
+                panic!("Failed to lock global memory map: {}", e);
+            }
+        }
     }
 }
