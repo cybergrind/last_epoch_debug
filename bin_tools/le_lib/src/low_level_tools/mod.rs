@@ -4,6 +4,7 @@
 pub mod compiler;
 pub mod hook_tools;
 pub mod injector;
+mod templates;
 
 // Re-export key functions for convenience
 pub use compiler::{compile_assembly_local, compile_assembly_remote};

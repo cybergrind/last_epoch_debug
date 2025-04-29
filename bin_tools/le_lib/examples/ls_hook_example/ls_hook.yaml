@@ -2,4 +2,5 @@ hooks:
   - name: example_hook
     target_address: '0x5555559575ac'
     memory_content: '\xff\x15\x86\xf7\x01\x00L\x89\xe7L\x8d%\x00\\\x01\x00\xff\x15F\xf7\x01\x00H\x8d=\x17z\x00\x00\xc7\x05\xb5\xfa\x01\x00\x02'
-    hook_function: le_lib_echo
+    hook_functions:
+      - le_lib_echo

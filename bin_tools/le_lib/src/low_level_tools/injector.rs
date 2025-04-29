@@ -35,11 +35,18 @@ pub unsafe fn inject_hook(
         };
 
         // Get the hook function address
-        let hook_function_address = match get_function_address(&hook.hook_function) {
-            Ok(addr) => addr,
-            Err(e) => return Err(format!("Failed to get hook function address: {}", e)),
-        };
+        let hook_function_addresses: Vec<u64> = hook
+            .hook_functions
+            .iter()
+            .map(|f| {
+                get_function_address(f)
+                    .expect(format!("Failed to get address for function {}", f).as_str())
+            })
+            .collect();
 
+        for target_address in &hook_function_addresses {
+            info!("Hook function address: 0x{:x}", target_address);
+        }
         info!("Using calculated target address: 0x{:x}", target_address);
 
         // Dump the memory region before we try to modify it
@@ -94,7 +101,7 @@ pub unsafe fn inject_hook(
                     name: hook.name.clone(),
                     target_address,
                     trampoline_address: trampoline_info.address,
-                    hook_function_address,
+                    hook_function_addresses,
                     original_bytes,
                 })
             }
@@ -471,7 +478,7 @@ mod tests {
             name: "test_hook".to_string(),
             target_address: format!("{:x}", mem_address),
             memory_content: "\\x90\\x48\\x89\\x5C\\x24\\x08\\x48\\x89".to_string(),
-            hook_function: "le_lib_echo".to_string(),
+            hook_functions: vec!["le_lib_echo".to_string()],
             wait_for_file: None,
             base_file: None,
             target_process: None,

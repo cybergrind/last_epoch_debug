@@ -8,6 +8,8 @@ use std::ptr;
 use std::sync::{Mutex, Once};
 
 use crate::constants::get_hooks_config_path;
+use crate::low_level_tools::templates::render_jumper;
+use crate::low_level_tools::templates::render_trampoline;
 use crate::low_level_tools::{compiler, injector};
 use crate::system_tools::MEMORY_MAP;
 
@@ -17,7 +19,7 @@ pub struct Hook {
     pub name: String,
     pub target_address: String,
     pub memory_content: String,
-    pub hook_function: String,
+    pub hook_functions: Vec<String>,
     pub align_size: u64,
     pub overwritten_instructions: String,
     pub wait_for_file: Option<String>,
@@ -37,7 +39,7 @@ pub struct ActiveHook {
     pub name: String,
     pub target_address: u64,
     pub trampoline_address: u64,
-    pub hook_function_address: u64,
+    pub hook_function_addresses: Vec<u64>,
     pub original_bytes: Vec<u8>,
 }
 
@@ -423,7 +425,7 @@ unsafe fn verify_memory_content(address: u64, expected_content: &str) -> bool {
 fn generate_hook_assembly(
     hook: &Hook,
     target_address: u64,
-    hook_function_address: u64,
+    hook_function_addresses: &Vec<u64>,
     trampoline_address: Option<u64>, // Optional trampoline address for jumper generation
 ) -> Result<(String, String), String> {
     // Get a reliable temporary directory
@@ -461,103 +463,15 @@ fn generate_hook_assembly(
     );
 
     // Create the trampoline assembly
-    let trampoline_asm = format!(
-        r#"BITS 64
-    ; restore previous rax state
-    pop rax
-
-    ; Save all registers and flags in the correct order for x86-64 ABI compliance
-    ; Save flags first to preserve them before any operations
-    pushfq
-
-    ; Save all general purpose registers
-    push rax
-    push rcx
-    push rdx
-    push rbx
-    push rbp
-    push rsi
-    push rdi
-    push r8
-    push r9
-    push r10
-    push r11
-    push r12
-    push r13
-    push r14
-    push r15
-
-    ; create new stack frame
-    push rbp
-    mov rbp, rsp
-
-    ; Call the hook function
-    mov rax, 0x{:X}
-    call rax
-
-    ; restore the original stack frame
-    mov rsp, rbp
-    pop rbp
-
-    ; Restore all registers in reverse order
-    pop r15
-    pop r14
-    pop r13
-    pop r12
-    pop r11
-    pop r10
-    pop r9
-    pop r8
-    pop rdi
-    pop rsi
-    pop rbp
-    pop rbx
-    pop rdx
-    pop rcx
-    pop rax
-
-    ; Restore flags last
-    popfq
-
-    ; Execute overwritten instructions
-    {}
-
-    ; Jump back to the original function (after our jumper)
-    push rax
-    mov rax, 0x{:X}
-    ; skip following instructions bytes
-    ; push rax  ; l byte
-    ; mov rax, 0xDEADBEEF  ; 10 bytes
-    ; jmp rax  ; 2 bytes
-    ; pop rax <- need to jump here
-    add rax, 0xD
-    jmp rax
-"#,
-        hook_function_address, hook.overwritten_instructions, target_address
+    // prologue + each_hook*hook + epilogue
+    let trampoline_asm = render_trampoline(
+        hook_function_addresses.to_vec(),
+        &hook.overwritten_instructions,
+        target_address,
     );
 
     // Create the jumper assembly (this will replace the original code)
-    let jumper_asm = if let Some(addr) = trampoline_address {
-        format!(
-            r#"BITS 64
-    ; Jump to our trampoline
-    push rax
-    mov rax, 0x{:X}
-    jmp rax
-    pop rax
-"#,
-            addr
-        )
-    } else {
-        format!(
-            r#"section .text
-global _start
-_start:
-    ; Placeholder for jump instruction - address will be replaced later
-    jmp qword 0x1111111111111111
-"#
-        )
-    };
+    let jumper_asm = render_jumper(trampoline_address);
 
     // Write the assembly files
     if let Err(e) = fs::write(&trampoline_asm_path, trampoline_asm) {
@@ -595,13 +509,22 @@ unsafe fn compile_and_inject_hook(hook: &Hook) -> Result<ActiveHook, String> {
     );
 
     // Get the hook function address
-    let hook_function_address = get_function_address(&hook.hook_function)?;
+    let hook_function_addresses = hook
+        .hook_functions
+        .iter()
+        .map(|f| {
+            get_function_address(f).unwrap_or_else(|_| {
+                error!("Failed to get address for function '{}'", f);
+                0
+            })
+        })
+        .collect::<Vec<u64>>();
 
     // FIRST STEP: Generate and compile the trampoline
 
     // Generate assembly code for trampoline (without knowing trampoline address yet)
     let (trampoline_asm_path, _) =
-        generate_hook_assembly(hook, target_address, hook_function_address, None)?;
+        generate_hook_assembly(hook, target_address, &hook_function_addresses, None)?;
 
     // Read the assembly code file
     let trampoline_asm = fs::read_to_string(&trampoline_asm_path)
@@ -644,7 +567,7 @@ unsafe fn compile_and_inject_hook(hook: &Hook) -> Result<ActiveHook, String> {
     let (_, jumper_asm_path) = generate_hook_assembly(
         hook,
         target_address,
-        hook_function_address,
+        &hook_function_addresses,
         Some(trampoline_info.address),
     )?;
 
@@ -843,7 +766,7 @@ hooks:
   - name: test_hook
     target_address: 0xDEADBEEF
     memory_content: '\x48\x89\x5C\x24\x08'  # Some example x86_64 instructions
-    hook_function: le_lib_echo
+    hook_functions: [ le_lib_echo ]
     align_size: 16
     overwritten_instructions: '\x90\x90\x90\x90'  # NOP instructions
 "#;
@@ -875,7 +798,7 @@ hooks:
         assert_eq!(config.hooks[0].name, "test_hook");
         assert_eq!(config.hooks[0].target_address, "0xDEADBEEF");
         assert_eq!(config.hooks[0].memory_content, "\\x48\\x89\\x5C\\x24\\x08");
-        assert_eq!(config.hooks[0].hook_function, "le_lib_echo");
+        assert_eq!(config.hooks[0].hook_functions[0], "le_lib_echo");
 
         // Clean up
         cleanup_test_hooks_config().expect("Failed to clean up test hooks config");
