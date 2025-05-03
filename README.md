@@ -49,3 +49,19 @@ Makefile
   context.md
   todo.md
 ```
+
+
+il2cpp.h edits:
+
+```c
+typedef uint64_t uintptr_t;
+typedef int64_t intptr_t;
+
+struct System_ParameterizedStrings_FormatParam_Fields {
+    // replace _int32 with something else_
+	// int32_t _int32;
+    int32_t changed_int32;
+	struct System_String_o* _string;
+};
+
+```

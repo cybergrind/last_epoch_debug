@@ -1,8 +1,8 @@
 hooks:
   - name: example_hook
     #target_address: 0x6ffff84e20d0
-    target_address: '0x11820d0'
-    memory_content: '@SUVATAUAWH\x83\xec(\x80=1`-\x03\x00M\x8b\xe9M\x8b\xe0H\x8b\xeaH\x8b'
+    target_address: '0x118a770'
+    memory_content: '@SUVATAUAWH\x83\xec(\x80=\xe0F.\x03\x00M\x8b\xe9M\x8b\xe0H\x8b\xeaH\x8b'
     hook_functions:
       - le_lib_echo
     target_process: 'Last Epoch.exe'
