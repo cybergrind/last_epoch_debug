@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs;
 use std::ptr;
+#[cfg(test)]
+use std::sync::RwLock;
 use std::sync::{Mutex, Once};
 
 use crate::constants::get_hooks_config_path;
@@ -25,6 +27,7 @@ pub struct Hook {
     pub wait_for_file: Option<String>,
     pub target_process: Option<String>,
     pub base_file: Option<String>,
+    pub base_address: Option<u64>,
 }
 
 // Structure to represent the hooks configuration
@@ -200,7 +203,22 @@ fn check_memory_mapped(address: u64, size: usize) -> bool {
     false
 }
 
+#[cfg(test)]
+lazy_static! {
+    static ref MOCKED_MODULE_BASE_ADDRESS: RwLock<Option<u64>> = RwLock::new(None);
+}
+
 fn get_module_base_address(module_name: &str) -> Option<u64> {
+    #[cfg(test)]
+    {
+        // In test mode, we can mock the module base address
+        if let Ok(mocked_address) = MOCKED_MODULE_BASE_ADDRESS.read() {
+            if let Some(address) = *mocked_address {
+                return Some(address);
+            }
+        }
+    }
+
     MEMORY_MAP
         .lock()
         .unwrap()
@@ -468,6 +486,7 @@ fn generate_hook_assembly(
         hook_function_addresses.to_vec(),
         &hook.overwritten_instructions,
         target_address,
+        hook.base_address.unwrap_or(0),
     );
 
     // Create the jumper assembly (this will replace the original code)
@@ -621,6 +640,13 @@ fn get_only_matching_hooks(process_name: &str) -> Vec<Hook> {
                 true
             }
         })
+        // add base addresses
+        .map(|mut hook| {
+            if let Some(base_file) = &hook.base_file {
+                hook.base_address = get_module_base_address(base_file);
+            }
+            hook
+        })
         .collect()
 }
 
@@ -769,6 +795,8 @@ hooks:
     hook_functions: [ le_lib_echo ]
     align_size: 16
     overwritten_instructions: '\x90\x90\x90\x90'  # NOP instructions
+    process_name: test_process.exe
+    base_file: test_module.dll
 "#;
 
         // Write the test yaml to the hooks config path
@@ -799,6 +827,21 @@ hooks:
         assert_eq!(config.hooks[0].target_address, "0xDEADBEEF");
         assert_eq!(config.hooks[0].memory_content, "\\x48\\x89\\x5C\\x24\\x08");
         assert_eq!(config.hooks[0].hook_functions[0], "le_lib_echo");
+
+        // mock function `get_module_base_address` to return a known value
+        let mock_base_address = 0x12345678;
+        MOCKED_MODULE_BASE_ADDRESS
+            .write()
+            .unwrap()
+            .replace(mock_base_address);
+
+        let matching = get_only_matching_hooks("test_process.exe");
+        assert_eq!(matching.len(), 1);
+        assert_eq!(matching[0].base_address, Some(mock_base_address));
+
+        MOCKED_MODULE_BASE_ADDRESS.write().unwrap().take();
+        let matching = get_only_matching_hooks("test_process.exe");
+        assert_eq!(matching[0].base_address, None);
 
         // Clean up
         cleanup_test_hooks_config().expect("Failed to clean up test hooks config");

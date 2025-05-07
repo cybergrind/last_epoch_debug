@@ -484,6 +484,7 @@ mod tests {
             target_process: None,
             align_size: 21,
             overwritten_instructions: "".to_string(),
+            base_address: None,
         };
 
         // Create trampoline and jumper data

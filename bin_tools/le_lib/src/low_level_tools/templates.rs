@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 /*```
     // Create the trampoline assembly
     let trampoline_asm = format!(
@@ -75,6 +77,8 @@
         hook_function_address, hook.overwritten_instructions, target_address
     );
 ```*/
+use tera::{self, Result as TeraResult, Value};
+use tera::{Context, Tera};
 
 fn render_prologue() -> String {
     return format!(
@@ -144,7 +148,46 @@ fn render_hook(hook_function_address: u64) -> String {
     )
 }
 
-fn render_epilogue(overwritten_instructions: &str, src_address: u64) -> String {
+fn lambda_relative(
+    base_address: u64,
+) -> impl Fn(&Value, &HashMap<String, Value>) -> TeraResult<Value> {
+    move |value: &Value, _| {
+        // parse hex value
+        let parsed_address =
+            u64::from_str_radix(value.as_str().unwrap_or("0x0").trim_start_matches("0x"), 16)
+                .unwrap();
+        let address = parsed_address + base_address;
+        Ok(Value::from(format!("0x{:X}", address)))
+    }
+}
+
+fn prepare_overwritten_instructions(overwritten_instructions: &str) -> String {
+    // we need to replace all occurences of template:
+    // {{ 0xSOMEVALUE }} with {{ '0xSOMEVALUE' | relative }}
+    let updated_instructions = overwritten_instructions
+        .replace("{{ 0x", "{{ '0x")
+        .replace(" }}", "' | relative }}");
+    updated_instructions
+}
+
+fn render_epilogue(overwritten_instructions: &str, src_address: u64, base_address: u64) -> String {
+    // overwritten_instructions is a tera template
+    // it can require base address for relative operations
+    // {{base_address + 0xDEADBEEF}}
+
+    let mut tera = Tera::default();
+    tera.register_filter("relative", lambda_relative(base_address));
+
+    let mut ctx = Context::new();
+    ctx.insert("base_address", &base_address);
+
+    let rendered_instructions = tera
+        .render_str(
+            &prepare_overwritten_instructions(overwritten_instructions),
+            &ctx,
+        )
+        .unwrap();
+
     format!(
         r#"
     ; Execute overwritten instructions
@@ -160,7 +203,7 @@ fn render_epilogue(overwritten_instructions: &str, src_address: u64) -> String {
     add rax, 0xD
     jmp rax
 "#,
-        overwritten_instructions, src_address
+        rendered_instructions, src_address
     )
 }
 
@@ -168,6 +211,7 @@ pub fn render_trampoline(
     hook_function_addresses: Vec<u64>,
     overwritten_instructions: &str,
     target_address: u64,
+    base_address: u64,
 ) -> String {
     let prologue = render_prologue();
     let hooks = hook_function_addresses
@@ -175,7 +219,7 @@ pub fn render_trampoline(
         .map(|&addr| render_hook(addr))
         .collect::<Vec<_>>()
         .join("\n");
-    let epilogue = render_epilogue(overwritten_instructions, target_address);
+    let epilogue = render_epilogue(overwritten_instructions, target_address, base_address);
     return vec![prologue, hooks, epilogue].join("\n");
 }
 
@@ -190,4 +234,41 @@ pub fn render_jumper(addr: Option<u64>) -> String {
     "#,
         addr.unwrap_or(0xDEADBEEF)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_prepare_overwritten_instructions() {
+        let overwritten_instructions = r#"
+        mov rax, {{ 0x200 }}
+        mov rbx, {{ 0x300 }}
+        "#;
+
+        let result = prepare_overwritten_instructions(overwritten_instructions);
+        assert!(result.contains("mov rax, {{ '0x200' | relative }}"));
+        assert!(result.contains("mov rbx, {{ '0x300' | relative }}"));
+    }
+
+    #[test]
+    fn test_render_trampoline() {
+        let hook_function_addresses = vec![0x12345678, 0x87654321];
+        let overwritten_instructions = "mov rax, {{ 0x200 }}";
+        let target_address = 0x9ABCDEF0;
+        let base_address = 0x10000000;
+
+        let result = render_trampoline(
+            hook_function_addresses,
+            overwritten_instructions,
+            target_address,
+            base_address,
+        );
+        println!("{}", result);
+
+        assert!(result.contains("BITS 64"));
+        assert!(result.contains("mov rax, 0x87654321"));
+        assert!(result.contains("mov rax, 0x10000200"));
+    }
 }
