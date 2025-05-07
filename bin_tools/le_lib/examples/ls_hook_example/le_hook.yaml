@@ -5,10 +5,11 @@ hooks:
     memory_content: '@SUVATAUAWH\x83\xec(\x80=\xe0F.\x03\x00M\x8b\xe9M\x8b\xe0H\x8b\xeaH\x8b'
     hook_functions:
       - le_lib_echo
-    target_process: 'Last Epoch.exe'
+    target_process: 'Last Epoch.exe1'
     base_file: 'GameAssembly.dll'
     align_size: 14
     overwritten_instructions: |
+      ;; base is: {# 0x0 #}
       push    rbx
       push    rbp
       push    rsi
@@ -21,8 +22,23 @@ hooks:
     target_address: '0x1ebcb93'
     memory_content: 'E3\xc9A\xb0\x01H\x8b\xd7\xe8O\x98=\x01H\x8b^\x18'
     hook_functions:
-      - le_lib_pickup
+      - le_lib_echo
     target_process: 'Last Epoch.exe'
     base_file: 'GameAssembly.dll'
     align_size: 14
     overwritten_instructions: |
+      xor r9d, r9d
+      mov r8b, 1
+      mov rdx, rdi
+      ;; base is: {# 0x0 #}
+
+      ;; save return address
+      mov r11, {{ src_address }}
+      add r11, 14
+      ;; save as return address
+      push r11
+
+      ;; address for: TMPro.TMP_Text$$SetText
+      mov r11, {# 0x32963f0 #}
+      ;; call {# 0x32963f0 #}
+      jmp r11

@@ -95,7 +95,10 @@ fn render_hook(hook_function_address: u64) -> String {
         r#"
 
     ; Save all registers and flags in the correct order for x86-64 ABI compliance
-    ; Save flags first to preserve them before any operations
+    ; Save stack pointer to the stack
+    push rsp
+
+    ; Save flags to preserve them before any operations
     pushfq
 
     ; Save all general purpose registers
@@ -114,6 +117,9 @@ fn render_hook(hook_function_address: u64) -> String {
     push r13
     push r14
     push r15
+
+    ; pass the stack pointer to the linux hook function
+    mov rdi, rsp
 
     ; create new stack frame
     push rbp
@@ -141,8 +147,10 @@ fn render_hook(hook_function_address: u64) -> String {
     pop rcx
     pop rax
 
-    ; Restore flags last
+    ; Restore flags
     popfq
+    ; Restore the stack pointer
+    pop rsp
     "#,
         hook_function_address
     )
@@ -163,10 +171,10 @@ fn lambda_relative(
 
 fn prepare_overwritten_instructions(overwritten_instructions: &str) -> String {
     // we need to replace all occurences of template:
-    // {{ 0xSOMEVALUE }} with {{ '0xSOMEVALUE' | relative }}
+    // {# 0xSOMEVALUE #} with {{ '0xSOMEVALUE' | relative }}
     let updated_instructions = overwritten_instructions
-        .replace("{{ 0x", "{{ '0x")
-        .replace(" }}", "' | relative }}");
+        .replace("{# 0x", "{{ '0x")
+        .replace(" #}", "' | relative }}");
     updated_instructions
 }
 
@@ -180,6 +188,7 @@ fn render_epilogue(overwritten_instructions: &str, src_address: u64, base_addres
 
     let mut ctx = Context::new();
     ctx.insert("base_address", &base_address);
+    ctx.insert("src_address", &src_address);
 
     let rendered_instructions = tera
         .render_str(
@@ -243,8 +252,8 @@ mod tests {
     #[test]
     fn test_prepare_overwritten_instructions() {
         let overwritten_instructions = r#"
-        mov rax, {{ 0x200 }}
-        mov rbx, {{ 0x300 }}
+        mov rax, {# 0x200 #}
+        mov rbx, {# 0x300 #}
         "#;
 
         let result = prepare_overwritten_instructions(overwritten_instructions);
@@ -255,7 +264,7 @@ mod tests {
     #[test]
     fn test_render_trampoline() {
         let hook_function_addresses = vec![0x12345678, 0x87654321];
-        let overwritten_instructions = "mov rax, {{ 0x200 }}";
+        let overwritten_instructions = "mov rax, {# 0x200 #}";
         let target_address = 0x9ABCDEF0;
         let base_address = 0x10000000;
 

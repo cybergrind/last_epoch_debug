@@ -3,6 +3,7 @@ use std::sync::Once;
 
 pub use hooks::echo;
 pub use hooks::echo::le_lib_echo;
+pub use hooks::pickup::le_lib_pickup;
 pub use lib_init::le_lib_init;
 pub use low_level_tools::hook_tools::{le_lib_load_hook, le_lib_unload_hook};
 
@@ -58,6 +59,11 @@ mod tests {
 
     #[test]
     fn test_le_lib_echo() {
-        le_lib_echo();
+        let current_rsp: u64;
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            std::arch::asm!("mov {rsp}, rsp", rsp = out(reg) current_rsp);
+        }
+        le_lib_echo(current_rsp);
     }
 }

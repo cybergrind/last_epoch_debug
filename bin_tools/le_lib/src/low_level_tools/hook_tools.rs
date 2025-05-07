@@ -242,11 +242,8 @@ pub fn get_function_address(function_name: &str) -> Result<u64, String> {
     // This is a simplified implementation and would need to be expanded
     // to look up symbols in the actual game binary
     match function_name {
-        "le_lib_echo" => {
-            // In a real implementation, we would look up the actual address
-            // For now, use a placeholder to demonstrate the concept
-            Ok(crate::echo::le_lib_echo as u64)
-        }
+        "le_lib_echo" => Ok(crate::le_lib_echo as u64),
+        "le_lib_pickup" => Ok(crate::le_lib_pickup as u64),
         _ => Err(format!("Unknown function: {}", function_name)),
     }
 }
