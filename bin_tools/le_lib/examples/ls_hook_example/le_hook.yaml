@@ -22,7 +22,8 @@ hooks:
     target_address: '0x1ebcb93'
     memory_content: 'E3\xc9A\xb0\x01H\x8b\xd7\xe8O\x98=\x01H\x8b^\x18'
     hook_functions:
-      - le_lib_echo
+      #- le_lib_echo
+      - le_lib_pickup
     target_process: 'Last Epoch.exe'
     base_file: 'GameAssembly.dll'
     align_size: 14
