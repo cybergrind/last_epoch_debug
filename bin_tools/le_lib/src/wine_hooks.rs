@@ -134,8 +134,8 @@ fn process_module(path: &str, address: u64, known_modules: &mut HashSet<String>)
     // Add to known modules
     known_modules.insert(path.to_string());
 
-    info!("Detected new module: {}", path);
-    info!("Total mmap calls: {}", *CALLS_COUNTER.lock().unwrap());
+    // info!("Detected new module: {}", path);
+    // info!("Total mmap calls: {}", *CALLS_COUNTER.lock().unwrap());
 
     // Extract the base module name from path
     let base_name = Path::new(path)

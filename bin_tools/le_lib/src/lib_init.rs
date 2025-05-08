@@ -77,8 +77,8 @@ unsafe extern "C" fn dll_loaded_callback(dll_path: *const c_char, base_address: 
 
     unsafe {
         match CStr::from_ptr(dll_path).to_str() {
-            Ok(path) => {
-                info!("DLL loaded: {} at address {:p}", path, base_address);
+            Ok(_path) => {
+                // info!("DLL loaded: {} at address {:p}", path, base_address);
             }
             Err(e) => {
                 error!("Error converting DLL path to string: {}", e);

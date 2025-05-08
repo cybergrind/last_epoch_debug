@@ -1,7 +1,11 @@
 use crate::constants::GAME_DLL;
 use crate::echo::Registers;
+use crate::hooks::pickup;
 use crate::low_level_tools::hook_tools::get_module_base_address;
+use lazy_static::lazy_static;
 use log::info;
+use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[repr(C)]
 #[derive(Debug)]
@@ -31,6 +35,7 @@ struct StackFromPointer {
     var15: u64,
 }
 struct StackExplorer {
+    only_code_pointers: bool,
     dll_base_address: u64,
     base_address: u64,
     var0: u64,
@@ -52,9 +57,10 @@ struct StackExplorer {
 }
 
 impl StackExplorer {
-    pub fn new(base_address: u64) -> Self {
+    pub fn new(base_address: u64, only_code_pointers: bool) -> Self {
         let from_pointer = unsafe { &*(base_address as *const StackFromPointer) };
         StackExplorer {
+            only_code_pointers,
             dll_base_address: get_module_base_address(GAME_DLL).unwrap(),
             base_address,
             var0: from_pointer.var0,
@@ -78,6 +84,12 @@ impl StackExplorer {
 
     #[inline(always)]
     fn fmt(&self, current_base: u64, var1: u64, var2: u64) -> String {
+        if self.only_code_pointers {
+            if var1 < self.dll_base_address && var2 < self.dll_base_address {
+                return "".to_string();
+            }
+        }
+
         format!(
             "0x{:<8X} 0x{:<16X} / 0x{:<16X} 0x{:<16X} / 0x{:<16X}",
             current_base,
@@ -115,11 +127,12 @@ impl StackExplorer {
         to_join.push(self.fmt(current_base + 0x60, self.var12, self.var13));
         to_join.push(self.fmt(current_base + 0x70, self.var14, self.var15));
 
+        to_join.retain(|s| !s.is_empty());
         info!("{}", to_join.join("\n"));
     }
 
-    pub fn just_print(rsp: u64) {
-        let stack_explorer = StackExplorer::new(rsp);
+    pub fn just_print(rsp: u64, only_code_pointers: bool) {
+        let stack_explorer = StackExplorer::new(rsp, only_code_pointers);
         stack_explorer.print();
     }
 }
@@ -141,13 +154,63 @@ impl GameString {
     pub fn read_from_ptr(ptr: u64) -> String {
         unsafe {
             let ptr = ptr as *const GameString;
-            (*ptr).to_string()
+            (*ptr).to_string().to_lowercase()
         }
     }
 }
 
+const PICKUP_RELATIVE_PTR: u64 = 0x1ebd6b0;
 const GOOD_POINTER: u64 = 0x1EBC067;
-const AUTOPICKUP_PARTS: &[&str] = &["Shard", "Glyph", "Rune"];
+const AUTOPICKUP_PARTS: &[&str] = &["shard", "glyph", "rune"];
+const NO_AUTOPICKUP_PARTS: &[&str] = &["rune dagger", "rune hammer", "rune stone"];
+
+pub fn call_window_function(function_ptr: u64, arg1: u64, arg2: u64, arg3: u64, arg4: u64) {
+    /*
+    We need to use calling convection from windows x64
+    arg1 = rcx
+    arg2 = rdx
+    arg3 = r8
+    arg4 = r9
+
+     */
+    info!("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+    info!("Calling function at: {:#X}", function_ptr);
+    info!("Arguments: {:#X} {:#X} {:#X} {:#X}", arg1, arg2, arg3, arg4);
+    unsafe {
+        std::arch::asm!(
+            "mov rcx, {}",
+            "mov rdx, {}",
+            "mov r8, {}",
+            "mov r9, {}",
+            "call {}",
+            in(reg) arg1,
+            in(reg) arg2,
+            in(reg) arg3,
+            in(reg) arg4,
+            in(reg) function_ptr,
+            clobber_abi("win64"),
+        );
+    }
+}
+
+const PICKUP_DELAY_MS: u64 = 200;
+lazy_static! {
+    pub static ref LAST_PICKUP_TIME: Mutex<u64> = Mutex::new(0);
+}
+
+fn can_pickup() -> bool {
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+
+    let mut last_pickup_time = LAST_PICKUP_TIME.lock().unwrap();
+    if now_ms - *last_pickup_time > PICKUP_DELAY_MS {
+        *last_pickup_time = now_ms;
+        return true;
+    }
+    false
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn le_lib_pickup(registers_ptr: u64) {
@@ -155,7 +218,7 @@ pub extern "C" fn le_lib_pickup(registers_ptr: u64) {
     let registers = Registers::from_saved_pointer(registers_ptr);
     let string_ptr = registers.rdi;
 
-    let se = StackExplorer::new(registers.rsp + 0xf0);
+    let se = StackExplorer::new(registers.rsp + 0xf0, false);
     if se.var1 == (GOOD_POINTER + se.dll_base_address) {
         return;
     }
@@ -165,12 +228,24 @@ pub extern "C" fn le_lib_pickup(registers_ptr: u64) {
     // info!("GameString: {:?}", game_string);
     for part in AUTOPICKUP_PARTS {
         if game_string.contains(part) {
+            let mut pickup = true;
+            for part in NO_AUTOPICKUP_PARTS {
+                if game_string.contains(part) {
+                    pickup = false;
+                }
+            }
+
             info!("Autopickup: {}", part);
+            if pickup && !can_pickup() {
+                return;
+            }
+            let pickup_ptr = se.dll_base_address + PICKUP_RELATIVE_PTR;
+            call_window_function(pickup_ptr, registers.rsi, 0, 0, 0);
         }
     }
 
     // our target is probably at rsp + 0xf8
-    // StackExplorer::just_print(registers.rsp + 0xf0);
-    // StackExplorer::just_print(registers.rsp + 0xf0 + 0x80);
-    // StackExplorer::just_print(registers.rsp + 0xf0 + 0x100);
+    // StackExplorer::just_print(registers.rsp + 0xf0, true);
+    // StackExplorer::just_print(registers.rsp + 0xf0 + 0x80, true);
+    // StackExplorer::just_print(registers.rsp + 0xf0 + 0x100, true);
 }
