@@ -208,7 +208,7 @@ lazy_static! {
     static ref MOCKED_MODULE_BASE_ADDRESS: RwLock<Option<u64>> = RwLock::new(None);
 }
 
-fn get_module_base_address(module_name: &str) -> Option<u64> {
+pub fn get_module_base_address(module_name: &str) -> Option<u64> {
     #[cfg(test)]
     {
         // In test mode, we can mock the module base address
