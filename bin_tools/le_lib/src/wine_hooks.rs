@@ -39,7 +39,7 @@ lazy_static! {
 }
 
 // Interval between memory map scans (in milliseconds)
-const SCAN_INTERVAL_MS: u64 = 5000;
+const SCAN_INTERVAL_MS: u64 = 15000;
 
 // Hook for mmap syscall
 #[unsafe(no_mangle)]

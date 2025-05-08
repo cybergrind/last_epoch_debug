@@ -19,8 +19,9 @@ hooks:
       sub     rsp, 0x28
 
   - name: auto_pickup_hook
-    target_address: '0x1ebcb93'
-    memory_content: 'E3\xc9A\xb0\x01H\x8b\xd7\xe8O\x98=\x01H\x8b^\x18'
+    # 0f 84 a9 01 00 00 45 33 c9 41 b0 01 48 8b d7 e8
+    target_address: '0x1ec7d53'
+    memory_content: 'E3\xc9A\xb0\x01H\x8b\xd7\xe8\xcf\x9d='
     hook_functions:
       #- le_lib_echo
       - le_lib_pickup
@@ -40,6 +41,6 @@ hooks:
       push r11
 
       ;; address for: TMPro.TMP_Text$$SetText
-      mov r11, {# 0x32963f0 #}
-      ;; call {# 0x32963f0 #}
+      mov r11, {# 0x32a1b30 #}
+      ;; call {# 0x32a1b30 #}
       jmp r11

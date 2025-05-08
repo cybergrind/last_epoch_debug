@@ -4,9 +4,31 @@ use crate::hooks::pickup;
 use crate::low_level_tools::hook_tools::get_module_base_address;
 use lazy_static::lazy_static;
 use log::info;
+use std::io::Write;
+use std::result;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[repr(C)]
+#[derive(Debug, Clone)]
+struct GroundItemLabel {
+    // skip 0x10 bytes
+    __pad1: [u8; 0x80],
+    pub did_recolor: u32,
+    pub rule_outcome: u32,
+    pub emphasized: u8,
+    __pad2: [u8; 0x4],
+    pub current_rule: u32,
+}
+
+impl GroundItemLabel {
+    pub fn from_ptr(ptr: u64) -> Self {
+        unsafe {
+            let ptr = ptr as *const GroundItemLabel;
+            (*ptr).clone()
+        }
+    }
+}
 #[repr(C)]
 #[derive(Debug)]
 struct GameString {
@@ -159,10 +181,10 @@ impl GameString {
     }
 }
 
-const PICKUP_RELATIVE_PTR: u64 = 0x1ebd6b0;
-const GOOD_POINTER: u64 = 0x1EBC067;
-const AUTOPICKUP_PARTS: &[&str] = &["shard", "glyph", "rune"];
-const NO_AUTOPICKUP_PARTS: &[&str] = &["rune dagger", "rune hammer", "rune stone"];
+const PICKUP_RELATIVE_PTR: u64 = 0x1ec8870;
+const GOOD_POINTER: u64 = 0x1EC7227;
+const AUTOPICKUP_PARTS: &[&str] = &["shard", "glyph", "rune of"];
+const NO_AUTOPICKUP_PARTS: &[&str] = &[];
 
 pub fn call_window_function(function_ptr: u64, arg1: u64, arg2: u64, arg3: u64, arg4: u64) {
     /*
@@ -173,9 +195,14 @@ pub fn call_window_function(function_ptr: u64, arg1: u64, arg2: u64, arg3: u64, 
     arg4 = r9
 
      */
+    //let mut result: u64 = 0;
     info!("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
     info!("Calling function at: {:#X}", function_ptr);
     info!("Arguments: {:#X} {:#X} {:#X} {:#X}", arg1, arg2, arg3, arg4);
+    info!("flushing stdout");
+    std::io::stdout().flush().unwrap();
+    info!("flushed stdout");
+
     unsafe {
         std::arch::asm!(
             "mov rcx, {}",
@@ -188,12 +215,11 @@ pub fn call_window_function(function_ptr: u64, arg1: u64, arg2: u64, arg3: u64, 
             in(reg) arg3,
             in(reg) arg4,
             in(reg) function_ptr,
-            clobber_abi("win64"),
         );
     }
 }
 
-const PICKUP_DELAY_MS: u64 = 200;
+const PICKUP_DELAY_MS: u64 = 15;
 lazy_static! {
     pub static ref LAST_PICKUP_TIME: Mutex<u64> = Mutex::new(0);
 }
@@ -219,27 +245,65 @@ pub extern "C" fn le_lib_pickup(registers_ptr: u64) {
     let string_ptr = registers.rdi;
 
     let se = StackExplorer::new(registers.rsp + 0xf0, false);
-    if se.var1 == (GOOD_POINTER + se.dll_base_address) {
+    let is_good_pointer = se.var1 == (GOOD_POINTER + se.dll_base_address);
+    /*if se.var1 == (GOOD_POINTER + se.dll_base_address) {
         return;
-    }
+    }*/
 
     let game_string = GameString::read_from_ptr(string_ptr);
 
-    // info!("GameString: {:?}", game_string);
+    info!("GameString: {:?}", game_string);
+    let item_label = GroundItemLabel::from_ptr(registers.rsi);
+    let current_var1 = if se.var1 > se.dll_base_address {
+        se.var1 - se.dll_base_address
+    } else {
+        se.var1
+    };
+    info!(
+        "Pickup item label: {:#X} is_good: {}, current: {:#X}",
+        item_label.rule_outcome, is_good_pointer, current_var1
+    );
+    info!(
+        "Recolor: {}, emphasized: {} rule: {}",
+        item_label.did_recolor, item_label.emphasized, item_label.current_rule
+    );
+
+    if item_label.rule_outcome == 1 {
+        info!("Item label is 1, skipping pickup");
+        return;
+    }
+
+    let is_good = item_label.rule_outcome == 0x2
+        || item_label.did_recolor > 0
+        || item_label.emphasized > 0
+
+    if is_good || is_good_pointer {
+        let pickup_ptr = se.dll_base_address + PICKUP_RELATIVE_PTR;
+        info!(
+            "1. calling pickup_ptr: {:#X} relative: {:#X}",
+            pickup_ptr, PICKUP_RELATIVE_PTR
+        );
+        call_window_function(pickup_ptr, registers.rsi, 0, 0, 0);
+        return;
+    }
+
     for part in AUTOPICKUP_PARTS {
         if game_string.contains(part) {
-            let mut pickup = true;
             for part in NO_AUTOPICKUP_PARTS {
                 if game_string.contains(part) {
-                    pickup = false;
+                    return;
                 }
             }
 
-            info!("Autopickup: {}", part);
-            if pickup && !can_pickup() {
+            info!("Autopickup: {} vs {}", part, game_string);
+            if !can_pickup() {
                 return;
             }
             let pickup_ptr = se.dll_base_address + PICKUP_RELATIVE_PTR;
+            info!(
+                "2. calling pickup_ptr: {:#X} relative: {:#X}",
+                pickup_ptr, PICKUP_RELATIVE_PTR
+            );
             call_window_function(pickup_ptr, registers.rsi, 0, 0, 0);
         }
     }
