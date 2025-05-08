@@ -11,18 +11,16 @@ struct GameString {
 }
 
 impl GameString {
-    pub fn to_string(&self) -> String {
-        unsafe {
-            // copy ptr.legth bytes to string, starting from ptr.first_char
-            let length = self.length as usize;
-            info!("GameString length: {}", length);
-            info!("GameString first_char: {}", self.first_char);
-            // first char pointer == self pointer + 0x14 bytes
-            let first_char_ptr = (self as *const GameString as usize + 0x14) as *const u16;
-            info!("GameString first_char_ptr: {:?}", first_char_ptr);
+    #[inline(always)]
+    fn first_char_ptr(&self) -> *const u16 {
+        &self.first_char as *const u16
+    }
 
-            let char_count = length;
-            let utf16_slice: &[u16] = std::slice::from_raw_parts(first_char_ptr, char_count);
+    #[inline(always)]
+    fn to_string(&self) -> String {
+        unsafe {
+            let utf16_slice: &[u16] =
+                std::slice::from_raw_parts(self.first_char_ptr(), self.length as usize);
             String::from_utf16_lossy(utf16_slice)
         }
     }

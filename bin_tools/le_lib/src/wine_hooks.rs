@@ -271,8 +271,8 @@ unsafe fn verify_memory_content(address: u64, expected_content: &str) -> bool {
             info!("Reading memory at address 0x{:x}", address);
             let actual_bytes =
                 std::slice::from_raw_parts(address as *const u8, expected_bytes.len());
-            info!("Actual bytes read: {:02X?}", actual_bytes);
-            info!("Expected bytes: {:02X?}", expected_bytes);
+            info!("[w] Actual bytes read: {:02X?}", actual_bytes);
+            info!("[w] Expected bytes: {:02X?}", expected_bytes);
 
             expected_bytes == actual_bytes
         });
