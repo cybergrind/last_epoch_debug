@@ -405,7 +405,7 @@ unsafe fn verify_memory_content(address: u64, expected_content: &str) -> bool {
             }
 
             info!("Actual bytes read: {:02X?}", actual_bytes);
-            info!("Expected bytes: {:02X?}", expected_bytes);
+            info!("Expected bytes:    {:02X?}", expected_bytes);
 
             actual_bytes == expected_bytes
         });

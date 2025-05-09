@@ -18,18 +18,56 @@ hooks:
       push    r15
       sub     rsp, 0x28
 
-  - name: disable_click_check
+  - name: disable_click_check_1
     # in GroundItemLabelButton Update
     # replace jump with nop
     target_address: '0x1ec6264'
     memory_content: '\x74\x0d'
     hook_functions: []
     memory_overwrite: '\x90\x90'
-    target_process: 'Last Epoch.exe'
+    target_process: 'Last Epoch.exe1'
     base_file: 'GameAssembly.dll'
     align_size: 4
     overwritten_instructions: ''
 
+  - name: disable_click_check_2
+    # EpochInputManager$$GetInteractMoveButtonDown
+    # replaced with call to
+    # EpochInputManager$$GetInteractMoveButtonHold
+    # def tohex(val, nbits): return hex((val + (1 << nbits)) % (1 << nbits))
+    # Keep the rest of instructions intact
+    target_address: '0x1ec61fa'
+    memory_content: '\xe8\x41\x71\xf3\xff'
+    hook_functions: []
+    memory_overwrite: '\xe8\x91\x71\xf3\xff'
+    target_process: 'Last Epoch.exe'
+    base_file: 'GameAssembly.dll'
+    align_size: 5
+    overwritten_instructions: ''
+
+  - name: disable_block_movement
+    # in GroundItemLabelButton Update
+    # replace call to EpochInputManager$$set_ShouldBlockMovementOnCurrentClickDownState
+    target_address: '0x1ec6257'
+    memory_content: '\xe8\x44\x35\xF4\xFF'
+    hook_functions: []
+    memory_overwrite: '\x90\x90\x90\x90\x90'
+    target_process: 'Last Epoch.exe'
+    base_file: 'GameAssembly.dll'
+    align_size: 5
+    overwritten_instructions: ''
+
+
+  - name: ground_item_label_button_update
+    target_address: '0x1ec61c8'
+    memory_content: '\x02H\xc7D$@\x00\x00\x00\x00\x83\xb8\xe0\x00\x00\x00\x00'
+    hook_functions:
+      - le_lib_echo
+    target_process: 'Last Epoch.exe1'
+    base_file: 'GameAssembly.dll'
+    align_size: 16
+    overwritten_instructions: |
+      ;; base is: {# 0x0 #}
 
   - name: auto_pickup_hook
     # in SetGroundTooltipText
