@@ -18,18 +18,7 @@ hooks:
       push    r15
       sub     rsp, 0x28
 
-  - name: disable_click_check_1
-    # in GroundItemLabelButton Update
-    # replace jump with nop
-    target_address: '0x1ec6264'
-    memory_content: '\x74\x0d'
-    hook_functions: []
-    memory_overwrite: '\x90\x90'
-    target_process: 'Last Epoch.exe1'
-    base_file: 'GameAssembly.dll'
-    align_size: 4
-    overwritten_instructions: ''
-
+  # QoL: great, pickup without clickin on item
   - name: disable_click_check_2
     # EpochInputManager$$GetInteractMoveButtonDown
     # replaced with call to
@@ -45,6 +34,7 @@ hooks:
     align_size: 5
     overwritten_instructions: ''
 
+  # QoL: great, pickup without stopping
   - name: disable_block_movement
     # in GroundItemLabelButton Update
     # replace call to EpochInputManager$$set_ShouldBlockMovementOnCurrentClickDownState
@@ -58,17 +48,7 @@ hooks:
     overwritten_instructions: ''
 
 
-  - name: ground_item_label_button_update
-    target_address: '0x1ec61c8'
-    memory_content: '\x02H\xc7D$@\x00\x00\x00\x00\x83\xb8\xe0\x00\x00\x00\x00'
-    hook_functions:
-      - le_lib_echo
-    target_process: 'Last Epoch.exe1'
-    base_file: 'GameAssembly.dll'
-    align_size: 16
-    overwritten_instructions: |
-      ;; base is: {# 0x0 #}
-
+  # QoL: good, works only for nearest items
   - name: auto_pickup_hook
     # in SetGroundTooltipText
     # 0f 84 a9 01 00 00 45 33 c9 41 b0 01 48 8b d7 e8
