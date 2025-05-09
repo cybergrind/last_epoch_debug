@@ -12,7 +12,7 @@ const GOOD_POINTER: u64 = 0x1ec6eb7;
 const AUTOPICKUP_ALWAYS: &[&str] = &[" charm", " key"];
 const AUTOPICKUP_PARTS: &[&str] = &["shard", "glyph", "rune of", " charm", " key"];
 const NO_AUTOPICKUP_PARTS: &[&str] = &[];
-const GOOD_HEXS: &[&str] = &["FFDE94FF"];
+const GOOD_HEXS: &[&str] = &["FFDE94FF", "FF7A51", "FF7A51  "];
 
 #[repr(C)]
 #[derive(Debug, Clone)]

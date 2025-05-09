@@ -18,6 +18,19 @@ hooks:
       push    r15
       sub     rsp, 0x28
 
+  - name: disable_click_check
+    # in GroundItemLabelButton Update
+    # replace jump with nop
+    target_address: '0x1ec6264'
+    memory_content: '\x74\x0d'
+    hook_functions: []
+    memory_overwrite: '\x90\x90'
+    target_process: 'Last Epoch.exe'
+    base_file: 'GameAssembly.dll'
+    align_size: 4
+    overwritten_instructions: ''
+
+
   - name: auto_pickup_hook
     # in SetGroundTooltipText
     # 0f 84 a9 01 00 00 45 33 c9 41 b0 01 48 8b d7 e8

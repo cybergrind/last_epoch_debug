@@ -24,6 +24,7 @@ pub struct Hook {
     pub hook_functions: Vec<String>,
     pub align_size: u64,
     pub overwritten_instructions: String,
+    pub memory_overwrite: Option<String>,
     pub wait_for_file: Option<String>,
     pub target_process: Option<String>,
     pub base_file: Option<String>,
@@ -705,14 +706,41 @@ pub extern "C" fn le_lib_load_hook() -> bool {
         }
 
         // Compile and inject the hook using our updated two-step process
-        match unsafe { compile_and_inject_hook(hook) } {
-            Ok(active_hook) => {
-                info!("Successfully loaded hook '{}'", hook.name);
-                active_hooks.insert(hook.name.clone(), active_hook);
-                processed_hooks.insert(hook.name.clone());
+        if !hook.overwritten_instructions.is_empty() {
+            match unsafe { compile_and_inject_hook(hook) } {
+                Ok(active_hook) => {
+                    info!("Successfully loaded hook '{}'", hook.name);
+                    active_hooks.insert(hook.name.clone(), active_hook);
+                    processed_hooks.insert(hook.name.clone());
+                }
+                Err(e) => {
+                    error!("Failed to compile and inject hook '{}': {}", hook.name, e);
+                }
             }
-            Err(e) => {
-                error!("Failed to compile and inject hook '{}': {}", hook.name, e);
+        }
+        if hook.memory_overwrite.is_some() {
+            // Handle memory overwrite if specified
+            let overwrite_content = hook.memory_overwrite.as_ref().unwrap();
+            let overwrite_bytes: &[u8] = &memory_content_to_bytes(overwrite_content);
+            if !overwrite_bytes.is_empty() {
+                info!(
+                    "Overwriting memory at 0x{:x} with {} bytes",
+                    target_address,
+                    overwrite_bytes.len()
+                );
+                unsafe {
+                    let res = injector::write_memory_hook(hook, target_address, overwrite_bytes);
+                    match res {
+                        Ok(active_hook) => {
+                            info!("Memory overwrite successful for hook '{}'", hook.name);
+                            active_hooks.insert(hook.name.clone(), active_hook);
+                            processed_hooks.insert(hook.name.clone());
+                        }
+                        Err(e) => {
+                            error!("Failed to overwrite memory for hook '{}': {}", hook.name, e);
+                        }
+                    }
+                }
             }
         }
     }

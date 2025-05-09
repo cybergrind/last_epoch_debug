@@ -6,6 +6,8 @@ use crate::low_level_tools::hook_tools::{
     is_wine_process, parse_hex_address,
 };
 
+use super::hook_tools::memory_content_to_bytes;
+
 /// Information about a written trampoline
 pub struct TrampolineInfo {
     /// Memory address where the trampoline is located
@@ -14,6 +16,63 @@ pub struct TrampolineInfo {
     pub size: usize,
 }
 
+pub unsafe fn write_memory_hook(
+    hook: &Hook,
+    address: u64,
+    data: &[u8],
+) -> Result<ActiveHook, String> {
+    // read the memory at the address and compare it with the data
+
+    unsafe {
+        let original_bytes = read_memory(address, data.len())?;
+        let expected_bytes = memory_content_to_bytes(&hook.memory_content);
+        if original_bytes != expected_bytes {
+            warn!(
+                "Memory at address 0x{:x} does not match expected content. Len: {}",
+                address,
+                data.len()
+            );
+            warn!("Expected: {:?}", expected_bytes);
+            warn!("Found:    {:?}", original_bytes);
+            return Err(format!(
+                "Memory at address 0x{:x} does not match expected content",
+                address
+            ));
+        }
+
+        match write_memory(address, data) {
+            Ok(_) => {
+                // Verify that the memory was actually changed
+                let verification = read_memory(address, data.len())?;
+                if verification == data {
+                    info!("Memory write verification successful");
+                } else {
+                    let written_str = verification
+                        .iter()
+                        .map(|b| format!("{:02X}", b))
+                        .collect::<Vec<String>>()
+                        .join(" ");
+                    let expected_str = data
+                        .iter()
+                        .map(|b| format!("{:02X}", b))
+                        .collect::<Vec<String>>()
+                        .join(" ");
+                    warn!("Memory write verification failed:");
+                    warn!("Expected: {}", expected_str);
+                    warn!("Found:    {}", written_str);
+                }
+                Ok(ActiveHook {
+                    name: hook.name.clone(),
+                    target_address: address,
+                    trampoline_address: 0,
+                    hook_function_addresses: vec![],
+                    original_bytes: original_bytes,
+                })
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
 /// Injects compiled code into memory and updates the game code
 #[allow(unused_variables)]
 pub unsafe fn inject_hook(
