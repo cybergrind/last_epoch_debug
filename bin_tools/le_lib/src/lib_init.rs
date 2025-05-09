@@ -69,7 +69,7 @@ pub fn notify_dll_loaded(dll_path: &str, base_address: *const c_void) {
 }
 
 // DLL load notification callback
-unsafe extern "C" fn dll_loaded_callback(dll_path: *const c_char, base_address: *const c_void) {
+unsafe extern "C" fn dll_loaded_callback(dll_path: *const c_char, _base_address: *const c_void) {
     if dll_path.is_null() {
         warn!("DLL loaded but path is null");
         return;

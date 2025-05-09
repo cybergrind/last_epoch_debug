@@ -1,19 +1,109 @@
 use crate::constants::GAME_DLL;
 use crate::echo::Registers;
-use crate::hooks::pickup;
 use crate::low_level_tools::hook_tools::get_module_base_address;
 use lazy_static::lazy_static;
 use log::info;
-use std::io::Write;
-use std::result;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+// GroundItemLabel.requestPickup
+const PICKUP_RELATIVE_PTR: u64 = 0x1ec8500;
+const GOOD_POINTER: u64 = 0x1ec6eb7;
+const AUTOPICKUP_ALWAYS: &[&str] = &[" charm", " key"];
+const AUTOPICKUP_PARTS: &[&str] = &["shard", "glyph", "rune of", " charm", " key"];
+const NO_AUTOPICKUP_PARTS: &[&str] = &[];
+const GOOD_HEXS: &[&str] = &["FFDE94FF"];
+
+#[repr(C)]
+#[derive(Debug, Clone)]
+struct UnityColor {
+    pub r: f32,
+    pub g: f32,
+    pub b: f32,
+    pub a: f32,
+}
+impl UnityColor {
+    pub fn to_string(&self) -> String {
+        format!("r: {} g: {} b: {} a: {}", self.r, self.g, self.b, self.a)
+    }
+}
+
+#[repr(C)]
+#[derive(Debug)]
+struct GameString {
+    // skip 0x10 bytes
+    __pad: [u8; 0x10],
+    pub length: u32,
+    pub first_char: u16,
+}
+
+impl GameString {
+    #[inline(always)]
+    fn first_char_ptr(&self) -> *const u16 {
+        &self.first_char as *const u16
+    }
+
+    #[inline(always)]
+    pub fn to_string(&self) -> String {
+        unsafe {
+            let utf16_slice: &[u16] =
+                std::slice::from_raw_parts(self.first_char_ptr(), self.length as usize);
+            String::from_utf16_lossy(utf16_slice)
+        }
+    }
+    pub fn read_from_ptr(ptr: u64) -> String {
+        unsafe {
+            let ptr = ptr as *const GameString;
+            (*ptr).to_string().to_lowercase()
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone)]
+struct EColor {
+    __pad: [u8; 0x10],
+    pub id: u32,
+    pub hex_code: *const GameString,
+    pub color: UnityColor,
+    pub light_color: UnityColor,
+    pub button_color: UnityColor,
+    pub highlight_color: UnityColor,
+    pub border_color: UnityColor,
+    pub shine_color: UnityColor,
+    pub tooltip_name_color: UnityColor,
+    pub tooltip_background_color: UnityColor,
+    pub tooltip_ornament_color: UnityColor,
+}
+
+impl EColor {
+    pub fn hex(&self) -> String {
+        unsafe { (*self.hex_code).to_string() }
+    }
+
+    pub fn to_string(&self) -> String {
+        let hex_code = self.hex();
+        format!(
+            "hex: {} color: {} light_color: {} button_color: {} highlight_color: {} border_color: {} shine_color: {} tooltip_name_color: {} tooltip_background_color: {} tooltip_ornament_color: {}",
+            hex_code,
+            self.color.to_string(),
+            self.light_color.to_string(),
+            self.button_color.to_string(),
+            self.highlight_color.to_string(),
+            self.border_color.to_string(),
+            self.shine_color.to_string(),
+            self.tooltip_name_color.to_string(),
+            self.tooltip_background_color.to_string(),
+            self.tooltip_ornament_color.to_string()
+        )
+    }
+}
 #[repr(C)]
 #[derive(Debug, Clone)]
 struct GroundItemLabel {
     // skip 0x10 bytes
-    __pad1: [u8; 0x80],
+    __pad1: [u8; 0x78],
+    pub e_color: *const EColor,
     pub did_recolor: u32,
     pub rule_outcome: u32,
     pub emphasized: u8,
@@ -28,16 +118,18 @@ impl GroundItemLabel {
             (*ptr).clone()
         }
     }
-}
-#[repr(C)]
-#[derive(Debug)]
-struct GameString {
-    // skip 0x10 bytes
-    __pad: [u8; 0x10],
-    pub length: u32,
-    pub first_char: u16,
-}
+    pub fn to_string(&self) -> String {
+        let e_color = unsafe { (*self.e_color).to_string() };
+        format!(
+            "e_color: {} did_recolor: {} rule_outcome: {} emphasized: {} current_rule: {}",
+            e_color, self.did_recolor, self.rule_outcome, self.emphasized, self.current_rule
+        )
+    }
 
+    pub fn hex(&self) -> String {
+        unsafe { (*self.e_color).hex() }
+    }
+}
 struct StackFromPointer {
     var0: u64,
     var1: u64,
@@ -105,6 +197,7 @@ impl StackExplorer {
     }
 
     #[inline(always)]
+    #[allow(dead_code)]
     fn fmt(&self, current_base: u64, var1: u64, var2: u64) -> String {
         if self.only_code_pointers {
             if var1 < self.dll_base_address && var2 < self.dll_base_address {
@@ -130,6 +223,7 @@ impl StackExplorer {
         )
     }
 
+    #[allow(dead_code)]
     pub fn print(&self) {
         let mut to_join: Vec<String> = Vec::new();
         info!(
@@ -153,38 +247,12 @@ impl StackExplorer {
         info!("{}", to_join.join("\n"));
     }
 
+    #[allow(dead_code)]
     pub fn just_print(rsp: u64, only_code_pointers: bool) {
         let stack_explorer = StackExplorer::new(rsp, only_code_pointers);
         stack_explorer.print();
     }
 }
-
-impl GameString {
-    #[inline(always)]
-    fn first_char_ptr(&self) -> *const u16 {
-        &self.first_char as *const u16
-    }
-
-    #[inline(always)]
-    fn to_string(&self) -> String {
-        unsafe {
-            let utf16_slice: &[u16] =
-                std::slice::from_raw_parts(self.first_char_ptr(), self.length as usize);
-            String::from_utf16_lossy(utf16_slice)
-        }
-    }
-    pub fn read_from_ptr(ptr: u64) -> String {
-        unsafe {
-            let ptr = ptr as *const GameString;
-            (*ptr).to_string().to_lowercase()
-        }
-    }
-}
-
-const PICKUP_RELATIVE_PTR: u64 = 0x1ec8870;
-const GOOD_POINTER: u64 = 0x1EC7227;
-const AUTOPICKUP_PARTS: &[&str] = &["shard", "glyph", "rune of"];
-const NO_AUTOPICKUP_PARTS: &[&str] = &[];
 
 pub fn call_window_function(function_ptr: u64, arg1: u64, arg2: u64, arg3: u64, arg4: u64) {
     /*
@@ -196,12 +264,14 @@ pub fn call_window_function(function_ptr: u64, arg1: u64, arg2: u64, arg3: u64, 
 
      */
     //let mut result: u64 = 0;
+    /*
     info!("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
     info!("Calling function at: {:#X}", function_ptr);
     info!("Arguments: {:#X} {:#X} {:#X} {:#X}", arg1, arg2, arg3, arg4);
     info!("flushing stdout");
     std::io::stdout().flush().unwrap();
     info!("flushed stdout");
+    */
 
     unsafe {
         std::arch::asm!(
@@ -238,6 +308,36 @@ fn can_pickup() -> bool {
     false
 }
 
+#[inline(always)]
+fn is_autopickup_always(name: String) -> bool {
+    for part in AUTOPICKUP_ALWAYS {
+        if name.contains(part) {
+            return true;
+        }
+    }
+    false
+}
+
+#[inline(always)]
+fn is_autopickup(name: String) -> bool {
+    for part in AUTOPICKUP_PARTS {
+        if name.contains(part) {
+            return true;
+        }
+    }
+    false
+}
+
+#[inline(always)]
+fn skip_autopickup(name: String) -> bool {
+    for part in NO_AUTOPICKUP_PARTS {
+        if name.contains(part) {
+            return true;
+        }
+    }
+    false
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn le_lib_pickup(registers_ptr: u64) {
     info!("le_lib_pickup called");
@@ -246,27 +346,22 @@ pub extern "C" fn le_lib_pickup(registers_ptr: u64) {
 
     let se = StackExplorer::new(registers.rsp + 0xf0, false);
     let is_good_pointer = se.var1 == (GOOD_POINTER + se.dll_base_address);
-    /*if se.var1 == (GOOD_POINTER + se.dll_base_address) {
-        return;
-    }*/
 
     let game_string = GameString::read_from_ptr(string_ptr);
 
-    info!("GameString: {:?}", game_string);
     let item_label = GroundItemLabel::from_ptr(registers.rsi);
+
     let current_var1 = if se.var1 > se.dll_base_address {
         se.var1 - se.dll_base_address
     } else {
         se.var1
     };
     info!(
-        "Pickup item label: {:#X} is_good: {}, current: {:#X}",
-        item_label.rule_outcome, is_good_pointer, current_var1
+        "GameString: {:?} BT Address: {:#X}",
+        game_string, current_var1
     );
-    info!(
-        "Recolor: {}, emphasized: {} rule: {}",
-        item_label.did_recolor, item_label.emphasized, item_label.current_rule
-    );
+
+    info!("Pickup item label: {}", item_label.to_string());
 
     if item_label.rule_outcome == 1 {
         info!("Item label is 1, skipping pickup");
@@ -276,6 +371,8 @@ pub extern "C" fn le_lib_pickup(registers_ptr: u64) {
     let is_good = item_label.rule_outcome == 0x2
         || item_label.did_recolor > 0
         || item_label.emphasized > 0
+        || GOOD_HEXS.contains(&item_label.hex().as_str())
+        || is_autopickup_always(game_string.clone());
 
     if is_good || is_good_pointer {
         let pickup_ptr = se.dll_base_address + PICKUP_RELATIVE_PTR;
@@ -287,25 +384,20 @@ pub extern "C" fn le_lib_pickup(registers_ptr: u64) {
         return;
     }
 
-    for part in AUTOPICKUP_PARTS {
-        if game_string.contains(part) {
-            for part in NO_AUTOPICKUP_PARTS {
-                if game_string.contains(part) {
-                    return;
-                }
-            }
-
-            info!("Autopickup: {} vs {}", part, game_string);
-            if !can_pickup() {
-                return;
-            }
-            let pickup_ptr = se.dll_base_address + PICKUP_RELATIVE_PTR;
-            info!(
-                "2. calling pickup_ptr: {:#X} relative: {:#X}",
-                pickup_ptr, PICKUP_RELATIVE_PTR
-            );
-            call_window_function(pickup_ptr, registers.rsi, 0, 0, 0);
+    if is_autopickup(game_string.clone()) {
+        info!("Autopickup: {} vs {}", game_string, item_label.to_string());
+        if skip_autopickup(game_string.clone()) {
+            return;
         }
+        if !can_pickup() {
+            return;
+        }
+        let pickup_ptr = se.dll_base_address + PICKUP_RELATIVE_PTR;
+        info!(
+            "2. calling pickup_ptr: {:#X} relative: {:#X}",
+            pickup_ptr, PICKUP_RELATIVE_PTR
+        );
+        call_window_function(pickup_ptr, registers.rsi, 0, 0, 0);
     }
 
     // our target is probably at rsp + 0xf8
