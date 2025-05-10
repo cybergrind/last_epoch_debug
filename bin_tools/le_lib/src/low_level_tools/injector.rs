@@ -537,6 +537,7 @@ mod tests {
             name: "test_hook".to_string(),
             target_address: format!("{:x}", mem_address),
             memory_content: "\\x90\\x48\\x89\\x5C\\x24\\x08\\x48\\x89".to_string(),
+            memory_overwrite: None,
             hook_functions: vec!["le_lib_echo".to_string()],
             wait_for_file: None,
             base_file: None,
