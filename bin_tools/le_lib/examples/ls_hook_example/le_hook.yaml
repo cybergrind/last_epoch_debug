@@ -47,6 +47,25 @@ hooks:
     align_size: 5
     overwritten_instructions: ''
 
+  - name: set_movement_during_use_to_1
+    target_address: '0xefd92d'
+    memory_content: '\x0f\xb6\x86\x84\x00\x00\x00'
+    hook_functions: []
+    memory_overwrite: '\xb8\x01\x00\x00\x00\x90\x90'
+    target_process: 'Last Epoch.exe1'
+    base_file: 'GameAssembly.dll'
+    align_size: 7
+    overwritten_instructions: ''
+
+  - name: disable_block_movement_in_set_should_block_movement
+    target_address: '0x1e097b2'
+    memory_content: '\x88\x91'
+    hook_functions: []
+    memory_overwrite: '\xc6\x81'
+    target_process: 'Last Epoch.exe1'
+    base_file: 'GameAssembly.dll'
+    align_size: 4
+    overwritten_instructions: ''
 
   # QoL: good, works only for nearest items
   - name: auto_pickup_hook
