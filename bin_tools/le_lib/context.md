@@ -59,7 +59,66 @@ hooks:
 ## TODO:
 * implement HookManager
   * stores all hooks
-  * should use yaml file to converge existing applied hooks 
+  * should use yaml file to converge existing applied hooks
+  * should be able to load and unload hooks
+  * when unloading hook: there should be no active running hooks!
+* separate thread look should scan for file changes and trigger HookManager
+* remove `mmap` hooking -- our init is already called and doing everything we need
+* Hook config structure and improvements
+  * detect if hook is incorrect and not crash - just report it in the log
+  * process name should be on the top level
+  * ability to disable hook with one parameter
+  * Hook should have some defaults but when parsing - we should use Option and unwrap with default. Maybe we need to use `serde` for that or the separate struct
+  * if one hook is incorrect - other hooks should be loaded
+* Use `thiserror` for more structured error handling
+  * Replace string-based errors with proper error types
+  * Add context to error chains instead of just formatting strings
+  * Resources:
+    * [thiserror documentation](https://docs.rs/thiserror/latest/thiserror/)
+    * [Rust Error Handling Best Practices](https://blog.burntsushi.net/rust-error-handling/)
+* Improve thread safety in critical sections
+  * Use `parking_lot` for more efficient Mutex implementations
+  * Replace unwrap() calls with proper error handling in mutex locks
+  * Resources:
+    * [parking_lot documentation](https://docs.rs/parking_lot/latest/parking_lot/)
+    * [Rust Atomics and Locks](https://marabos.nl/atomics/)
+* Adopt consistent pointer safety patterns
+  * Replace direct pointer operations with safer abstractions
+  * Implement proper rust memory safety patterns for FFI boundaries
+  * Resources:
+    * [Rust FFI Guide](https://michael-f-bryan.github.io/rust-ffi-guide/)
+    * [Rustonomicon - FFI chapter](https://doc.rust-lang.org/nomicon/ffi.html)
+* Modernize panic handling in unsafe code
+  * Move more unsafe blocks into contained functions
+  * Adopt a consistent pattern for `catch_unwind` across the codebase
+  * Resources:
+    * [std::panic::catch_unwind documentation](https://doc.rust-lang.org/std/panic/fn.catch_unwind.html)
+    * [The Unsafe Code Guidelines](https://rust-lang.github.io/unsafe-code-guidelines/)
+* Reduce code duplication in memory operations
+  * Create shared abstractions for common memory patterns
+  * Consolidate similar memory utility functions
+  * Resources:
+    * [The DRY principle in Rust](https://rust-unofficial.github.io/patterns/patterns/behavioural/newtype.html)
+    * [mem module documentation](https://doc.rust-lang.org/std/mem/index.html)
+* Address `#[cfg(test)]` leaking implementation details
+  * Move test-only code into separate modules or files
+  * Use feature flags for test helper functionality
+  * Resources:
+    * [Rust's testing practices documentation](https://doc.rust-lang.org/book/ch11-03-test-organization.html)
+    * [Using Cargo features effectively](https://doc.rust-lang.org/cargo/reference/features.html)
+* Introduce stricter type safety for addresses
+  * Use newtype pattern for memory addresses
+  * Add validation for addresses at type boundaries
+  * Resources:
+    * [Newtype pattern](https://doc.rust-lang.org/rust-by-example/generics/new_types.html)
+    * [Type-driven API design in Rust](https://www.brandons.me/blog/type-driven-api-design-in-rust)
+* Standardize tracing and logging
+  * Establish consistent log level usage across modules
+  * Add structured logging for better debuggability
+  * Resources:
+    * [tracing crate documentation](https://docs.rs/tracing/latest/tracing/)
+    * [Logging best practices](https://rust-lang.github.io/rust-cookbook/development_tools/debugging/log.html)
+
 
 ## High Level Architecture
 
