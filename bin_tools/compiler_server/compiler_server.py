@@ -10,7 +10,7 @@ Usage:
 
 Options:
   --port PORT    Port to run the server on (default: 8765)
-  --host HOST    Host to bind the server to (default: localhost)
+  --host HOST    Host to bind the server to (default: 192.168.88.38)
 """
 
 import argparse
@@ -200,7 +200,7 @@ def main():
     """Start the compiler server."""
     parser = argparse.ArgumentParser(description='NASM Compiler Server')
     parser.add_argument('--port', type=int, default=8765, help='Port to run the server on')
-    parser.add_argument('--host', type=str, default='localhost', help='Host to bind the server to')
+    parser.add_argument('--host', type=str, default='0.0.0.0', help='Host to bind the server to')
 
     args = parser.parse_args()
 

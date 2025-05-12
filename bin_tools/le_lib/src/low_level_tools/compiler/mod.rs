@@ -16,7 +16,7 @@ pub enum CompilationResult {
 
 /// Returns the URL for the compiler server
 pub fn get_compiler_server_url() -> String {
-    std::env::var("COMPILER_SERVER_URL").unwrap_or_else(|_| "http://localhost:8765".to_string())
+    std::env::var("COMPILER_SERVER_URL").unwrap_or_else(|_| "http://192.168.88.38:8765".to_string())
 }
 
 /// Gets a reliable temporary directory

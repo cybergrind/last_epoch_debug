@@ -5,6 +5,13 @@ uv run proton_tools/__init__.py $GAME_PID
 $WINELOADER '/home/kpi/games/SteamLibrary/steamapps/common/Proton - Experimental/files/lib64/wine/x86_64-windows/winedbg.exe' --command "info proc"
 
 $WINELOADER '/home/kpi/games/SteamLibrary/steamapps/common/Proton - Experimental/files/lib64/wine/x86_64-windows/winedbg.exe' --gdb 0x128
+
+
+# create novpn namespace
+sudo -EH scripts/novpn_namespace.sh
+
+# run steam in it
+sudo -EH ip netns exec novpn sudo -EHu kpi /usr/bin/steam 
 ```
 
 
