@@ -24,8 +24,8 @@ pub unsafe fn write_memory_hook(
     // read the memory at the address and compare it with the data
 
     unsafe {
-        let original_bytes = read_memory(address, hook.memory_content.len())?;
         let expected_bytes = memory_content_to_bytes(&hook.memory_content);
+        let original_bytes = read_memory(address, expected_bytes.len())?;
         if original_bytes != expected_bytes {
             warn!(
                 "Memory at address 0x{:x} does not match expected content. Len: {}",
