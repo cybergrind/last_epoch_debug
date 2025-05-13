@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 # parent directory
 ROOT_DIR=$(realpath "$SCRIPT_DIR/..")
