@@ -9,7 +9,8 @@
 if ip netns list | grep -q novpn; then
     echo "Removing existing 'novpn' namespace..."
     sudo ip netns del novpn
-    sudo ip link del veth1 2>/dev/null
+    sudo ip link del veth1 2>/dev/null || true
+    sudo ip link del veth0 2>/dev/null || true
 fi
 
 # Create the network namespace
@@ -34,7 +35,6 @@ sudo ip rule del fwmark 1 table 200 2>/dev/null || true
 sudo ip route flush table 200 2>/dev/null || true
 sudo iptables -t mangle -F PREROUTING 2>/dev/null || true
 sudo iptables -t nat -F POSTROUTING 2>/dev/null || true
-sudo ip link del veth0 2>/dev/null || true
 
 # Create a macvlan interface directly connected to the physical network
 # This completely bypasses the host's routing tables and VPN
