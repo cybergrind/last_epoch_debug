@@ -17,6 +17,7 @@ base64 = "0.22.1"
 memmap2 = "0.9.5"
 uuid = { version = "1.16.0", features = ["v4"] }
 tera = { version = "1.20.0", features = ["builtins"], default-features = false }
+colored = "3.0.0"
 
 [lib]
 name = "le_lib"

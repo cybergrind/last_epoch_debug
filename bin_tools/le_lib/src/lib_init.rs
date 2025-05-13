@@ -1,3 +1,4 @@
+use colored::control::set_override;
 use lazy_static::lazy_static;
 use log::{error, info, warn};
 use std::collections::HashMap;
@@ -120,6 +121,7 @@ pub extern "C" fn le_lib_init() -> bool {
 
     INIT.call_once(|| {
         // Initialize logger
+        set_override(true);
         initialize_logger();
         info!("le_lib_init: Library initialization started");
 

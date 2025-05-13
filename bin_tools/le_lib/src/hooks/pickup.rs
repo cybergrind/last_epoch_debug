@@ -1,8 +1,10 @@
 use crate::constants::GAME_DLL;
 use crate::echo::Registers;
 use crate::low_level_tools::hook_tools::get_module_base_address;
+use colored::Colorize;
 use lazy_static::lazy_static;
 use log::info;
+use std::fmt::Debug;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -15,16 +17,28 @@ const NO_AUTOPICKUP_PARTS: &[&str] = &[];
 const GOOD_HEXS: &[&str] = &["FFDE94FF", "FF7A51", "FF7A51  "];
 
 #[repr(C)]
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct UnityColor {
     pub r: f32,
     pub g: f32,
     pub b: f32,
     pub a: f32,
 }
-impl UnityColor {
-    pub fn to_string(&self) -> String {
-        format!("r: {} g: {} b: {} a: {}", self.r, self.g, self.b, self.a)
+impl Debug for UnityColor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let color_str = format!(
+            "{:02X}{:02X}{:02X}{:02X}",
+            (self.r * 255.0) as u8,
+            (self.g * 255.0) as u8,
+            (self.b * 255.0) as u8,
+            (self.a * 255.0) as u8
+        )
+        .truecolor(
+            (self.r * 255.0) as u8,
+            (self.g * 255.0) as u8,
+            (self.b * 255.0) as u8,
+        );
+        write!(f, "{}", color_str)
     }
 }
 
@@ -60,7 +74,7 @@ impl GameString {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct EColor {
     __pad: [u8; 0x10],
     pub id: u32,
@@ -80,26 +94,29 @@ impl EColor {
     pub fn hex(&self) -> String {
         unsafe { (*self.hex_code).to_string() }
     }
+}
 
-    pub fn to_string(&self) -> String {
-        let hex_code = self.hex();
-        format!(
-            "hex: {} color: {} light_color: {} button_color: {} highlight_color: {} border_color: {} shine_color: {} tooltip_name_color: {} tooltip_background_color: {} tooltip_ornament_color: {}",
-            hex_code,
-            self.color.to_string(),
-            self.light_color.to_string(),
-            self.button_color.to_string(),
-            self.highlight_color.to_string(),
-            self.border_color.to_string(),
-            self.shine_color.to_string(),
-            self.tooltip_name_color.to_string(),
-            self.tooltip_background_color.to_string(),
-            self.tooltip_ornament_color.to_string()
+impl Debug for EColor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "EColor: id: {} hex_code: {:?} color: {:?} light_color: {:?} button_color: {:?} highlight_color: {:?} border_color: {:?} shine_color: {:?} tooltip_name_color: {:?} tooltip_background_color: {:?} tooltip_ornament_color: {:?}",
+            self.id,
+            self.hex(),
+            self.color,
+            self.light_color,
+            self.button_color,
+            self.highlight_color,
+            self.border_color,
+            self.shine_color,
+            self.tooltip_name_color,
+            self.tooltip_background_color,
+            self.tooltip_ornament_color
         )
     }
 }
 #[repr(C)]
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct GroundItemLabel {
     // skip 0x10 bytes
     __pad1: [u8; 0x78],
@@ -118,18 +135,23 @@ impl GroundItemLabel {
             (*ptr).clone()
         }
     }
-    pub fn to_string(&self) -> String {
-        let e_color = unsafe { (*self.e_color).to_string() };
-        format!(
-            "e_color: {} did_recolor: {} rule_outcome: {} emphasized: {} current_rule: {}",
-            e_color, self.did_recolor, self.rule_outcome, self.emphasized, self.current_rule
-        )
-    }
 
     pub fn hex(&self) -> String {
         unsafe { (*self.e_color).hex() }
     }
 }
+
+impl Debug for GroundItemLabel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let ecolor = unsafe { (*self.e_color).clone() };
+        write!(
+            f,
+            "GroundItemLabel: {:?} did_recolor: {:?} rule_outcome: {:?} emphasized: {}",
+            ecolor, self.did_recolor, self.rule_outcome, self.emphasized
+        )
+    }
+}
+#[repr(C)]
 struct StackFromPointer {
     var0: u64,
     var1: u64,
@@ -361,7 +383,7 @@ pub extern "C" fn le_lib_pickup(registers_ptr: u64) {
         game_string, current_var1
     );
 
-    info!("Pickup item label: {}", item_label.to_string());
+    info!("Pickup item label: {:?}", item_label);
 
     if item_label.rule_outcome == 1 {
         info!("Item label is 1, skipping pickup");
@@ -385,7 +407,7 @@ pub extern "C" fn le_lib_pickup(registers_ptr: u64) {
     }
 
     if is_autopickup(game_string.clone()) {
-        info!("Autopickup: {} vs {}", game_string, item_label.to_string());
+        info!("Autopickup: {} vs {:?}", game_string, item_label);
         if skip_autopickup(game_string.clone()) {
             return;
         }
