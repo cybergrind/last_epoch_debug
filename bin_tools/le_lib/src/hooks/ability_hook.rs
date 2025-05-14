@@ -1,11 +1,12 @@
 use crate::echo::Registers;
 use crate::pickup::GameString;
+#[allow(unused_imports)]
 use log::info;
 
 #[repr(C)]
 #[derive(Debug)]
 struct Ability {
-    _pad0: [u64; 0x2],
+    _pad0: [u64; 0x3],
     pub name: *const GameString,
 }
 
@@ -77,8 +78,8 @@ impl CastingData {
             let use_duration = (ptr + 0x7c) as *mut f32;
             *use_duration = 0.001;
 
-            let use_delay = (ptr + 0x80) as *mut f32;
-            *use_delay = 0.001;
+            // let use_delay = (ptr + 0x80) as *mut f32;
+            // *use_delay = 0.001;
         }
     }
 }
@@ -117,26 +118,27 @@ pub fn le_lib_ability_hook(registers_ptr: u64) {
     let _ = log::logger().flush();
 
     // Fix the way we access the ability name
+    #[allow(unused)]
     let ability_str = unsafe {
         if !casting_data.ability.is_null() && !(*casting_data.ability).name.is_null() {
-            (*(*casting_data.ability).name).to_string()
+            GameString::read_from_ptr((*casting_data.ability).name as u64)
         } else {
             String::from("unknown_ability")
         }
     };
 
-    info!(
-        "le_lib_ability_hook: Ability ID: {}, Name: {}, Mana Cost: {}, Instant Cast: {}",
-        casting_data.ability_id, ability_str, casting_data.mana_cost, casting_data.instant_cast
-    );
+    // info!(
+    //     "le_lib_ability_hook: Ability ID: {}, Name: {}, Mana Cost: {}, Instant Cast: {}",
+    //     casting_data.ability_id, ability_str, casting_data.mana_cost, casting_data.instant_cast
+    // );
 
     if FORCE_INSTANT_CAST.contains(&casting_data.ability_id) {
-        info!(
-            "le_lib_ability_hook: Setting instant cast for ability ID {}",
-            casting_data.ability_id
-        );
+        // info!(
+        //     "le_lib_ability_hook: Setting instant cast for ability ID {}",
+        //     casting_data.ability_id
+        // );
         CastingData::set_instant_cast_from_ptr(registers.rax);
-        set_r8(registers_ptr, 0x1);
+        //set_r8(registers_ptr, 0x1);
         //let registers2 = Registers::from_saved_pointer(registers_ptr);
         //info!("registers.r8: {} vs {}", registers.r8, registers2.r8);
     }
