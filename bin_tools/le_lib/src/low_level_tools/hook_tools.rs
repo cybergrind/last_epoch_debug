@@ -245,6 +245,7 @@ pub fn get_function_address(function_name: &str) -> Result<u64, String> {
     match function_name {
         "le_lib_echo" => Ok(crate::le_lib_echo as u64),
         "le_lib_pickup" => Ok(crate::le_lib_pickup as u64),
+        "le_lib_ability_hook" => Ok(crate::le_lib_ability_hook as u64),
         _ => Err(format!("Unknown function: {}", function_name)),
     }
 }

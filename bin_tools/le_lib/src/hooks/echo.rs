@@ -3,6 +3,14 @@ use log::info;
 #[repr(C)]
 #[derive(Debug)]
 pub struct Registers {
+    pub xmm7: u128,
+    pub xmm6: u128,
+    pub xmm5: u128,
+    pub xmm4: u128,
+    pub xmm3: u128,
+    pub xmm2: u128,
+    pub xmm1: u128,
+    pub xmm0: u128,
     pub r15: u64,
     pub r14: u64,
     pub r13: u64,
@@ -25,8 +33,8 @@ pub struct Registers {
 impl Registers {
     pub fn from_saved_pointer(saved_registers_ptr: u64) -> Self {
         unsafe {
-            let ptr = saved_registers_ptr as *const Registers;
-            (*ptr).clone()
+            let registers = std::ptr::read(saved_registers_ptr as *const Registers);
+            return registers;
         }
     }
     pub fn clone(&self) -> Self {
@@ -48,6 +56,14 @@ impl Registers {
             r14: self.r14,
             r15: self.r15,
             rflags: self.rflags,
+            xmm0: self.xmm0,
+            xmm1: self.xmm1,
+            xmm2: self.xmm2,
+            xmm3: self.xmm3,
+            xmm4: self.xmm4,
+            xmm5: self.xmm5,
+            xmm6: self.xmm6,
+            xmm7: self.xmm7,
         }
     }
 }

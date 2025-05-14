@@ -9,8 +9,8 @@ use std::os::raw::{c_char, c_void};
 use std::sync::{Mutex, Once};
 
 // local imports
-use crate::echo::le_lib_echo;
 use crate::initialize_logger;
+use crate::le_lib_echo;
 use crate::low_level_tools::hook_tools::load_hooks_config;
 use crate::wine_hooks::initialize_wine_hooks;
 

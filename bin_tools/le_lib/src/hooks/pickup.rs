@@ -44,7 +44,7 @@ impl Debug for UnityColor {
 
 #[repr(C)]
 #[derive(Debug)]
-struct GameString {
+pub struct GameString {
     // skip 0x10 bytes
     __pad: [u8; 0x10],
     pub length: u32,

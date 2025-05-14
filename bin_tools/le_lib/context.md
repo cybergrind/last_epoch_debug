@@ -57,6 +57,7 @@ hooks:
 ```
 
 ## TODO:
+* find how Aerial Assault is disrupting movement and disable it
 * implement HookManager
   * stores all hooks
   * should use yaml file to converge existing applied hooks

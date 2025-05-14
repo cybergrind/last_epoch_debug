@@ -2,7 +2,7 @@
 
 // Logging
 pub const LOG_FILE_PATH: &str = "/tmp/le_lib.log";
-pub const LOG_PATTERN: &str = "{d(%Y-%m-%d %H:%M:%S.%s)} [{l}] {t}: {m}{n}";
+pub const LOG_PATTERN: &str = "{d(%Y-%m-%d %H:%M:%S.%3f)} [{l}] {t}: {m}{n}";
 
 // Hook-related constants
 pub const DEFAULT_HOOKS_CONFIG_PATH: &str = "/tmp/hooks.yaml";

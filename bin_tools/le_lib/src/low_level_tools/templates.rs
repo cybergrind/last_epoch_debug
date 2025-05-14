@@ -118,6 +118,18 @@ fn render_hook(hook_function_address: u64) -> String {
     push r14
     push r15
 
+    ; save xmm registers
+    lea rsp, [rsp-16*8]
+    vmovdqu [rsp+16*0],xmm0
+    vmovdqu [rsp+16*1],xmm1
+    vmovdqu [rsp+16*2],xmm2
+    vmovdqu [rsp+16*3],xmm3
+    vmovdqu [rsp+16*4],xmm4
+    vmovdqu [rsp+16*5],xmm5
+    vmovdqu [rsp+16*6],xmm6
+    vmovdqu [rsp+16*7],xmm7
+
+
     ; pass the stack pointer to the linux hook function
     mov rdi, rsp
 
@@ -131,6 +143,17 @@ fn render_hook(hook_function_address: u64) -> String {
     mov rsp, rbp
     pop rbp
     ; Restore all registers in reverse order
+    ; restore xmm registers
+    vmovdqu xmm7,[rsp+16*7]
+    vmovdqu xmm6,[rsp+16*6]
+    vmovdqu xmm5,[rsp+16*5]
+    vmovdqu xmm4,[rsp+16*4]
+    vmovdqu xmm3,[rsp+16*3]
+    vmovdqu xmm2,[rsp+16*2]
+    vmovdqu xmm1,[rsp+16*1]
+    vmovdqu xmm0,[rsp+16*0]
+    lea rsp, [rsp+16*8]
+    ; Restore regular registers in reverse order
     pop r15
     pop r14
     pop r13

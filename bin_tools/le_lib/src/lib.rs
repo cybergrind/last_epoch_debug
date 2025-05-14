@@ -1,8 +1,11 @@
 use log::{LevelFilter, info};
 use std::sync::Once;
 
+pub use hooks::ability_hook;
+pub use hooks::ability_hook::le_lib_ability_hook;
 pub use hooks::echo;
 pub use hooks::echo::le_lib_echo;
+pub use hooks::pickup;
 pub use hooks::pickup::le_lib_pickup;
 pub use lib_init::le_lib_init;
 pub use low_level_tools::hook_tools::{le_lib_load_hook, le_lib_unload_hook};
