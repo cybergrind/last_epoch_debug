@@ -1,13 +1,19 @@
 hooks:
-
   # QoL: great, pickup without clickin on item
   - name: disable_click_check_2
-    # EpochInputManager$$GetInteractMoveButtonDown
+    # search for:
+    # 
+    # 48 8b 80 b8 00 00 00 48 8b 08 48 85 c9 74 ?? 33 d2 e8 ?? ?? f3 ff
+    # asm replace:
+    # call EpochInputManager$$GetInteractMoveButtonDown
     # replaced with call to
-    # EpochInputManager$$GetInteractMoveButtonHold
+    # EpochInputManager$$GetInteractMoveButtonHold -- +0x50 address
     # def tohex(val, nbits): return hex((val + (1 << nbits)) % (1 << nbits))
     # Keep the rest of instructions intact
-    target_address: '0x1ec61fa'
+    # xor edx, edx
+    # call EpochInputManager$$GetInteractMoveButtonHold
+    # test al, al
+    target_address: '0x1ec931a'
     memory_content: '\xe8\x41\x71\xf3\xff'
     hook_functions: []
     memory_overwrite: '\xe8\x91\x71\xf3\xff'
@@ -18,9 +24,13 @@ hooks:
 
   # QoL: great, pickup without stopping
   - name: disable_block_movement
+    # search for:
+    # 48 8b 80 b8 00 00 00 48 8b 08 48 85 c9 74 ?? 45 33 c0 b2 01 e8 ?? ?? ?? ?? 48 8b 4c 24 40
+    # asm disable with nops:
     # in GroundItemLabelButton Update
+    # call EpochInputManager__setShouldBlockMovementOnCurrentClickDownState
     # replace call to EpochInputManager$$set_ShouldBlockMovementOnCurrentClickDownState
-    target_address: '0x1ec6257'
+    target_address: '0x1ec9377'
     memory_content: '\xe8\x44\x35\xF4\xFF'
     hook_functions: []
     memory_overwrite: '\x90\x90\x90\x90\x90'
@@ -32,9 +42,16 @@ hooks:
   # QoL: good, works only for nearest items
   - name: auto_pickup_hook
     # in SetGroundTooltipText
-    # 0f 84 a9 01 00 00 45 33 c9 41 b0 01 48 8b d7 e8
-    target_address: '0x1ec79e3'
-    memory_content: 'E3\xc9A\xb0\x01H\x8b\xd7\xe8\xbf\x9d='
+    # 48 8b 4e 28 48 85 c9 0f ?? ?? 01 00 00 45 33 c9 41 b0 01 48 8b d7 e8
+    # remplacing:
+    # mov r9d, r9d
+    # mov r8b, 1
+    # mov rdx, rdi
+    # call TMPro.TMP_Text$$SetText
+    # NOTE: need to update TMP_SetText address too
+    # NOTE: need to update pickup.rs -> GroundItemLabel__requestPickup
+    target_address: '0x1ecab03'
+    memory_content: '\x45\x33\xc9\x41\xb0\x01\x48\x8b\xd7\xe8\x1f\xa2\x3d\x01'
     hook_functions:
       #- le_lib_echo
       - le_lib_pickup
@@ -54,25 +71,21 @@ hooks:
       push r11
 
       ;; address for: TMPro.TMP_Text$$SetText
-      mov r11, {# 0x32a17b0 #}
-      ;; call {# 0x32a17b0 #}
+      mov r11, {# 0x32a4d30 #}
+      ;; call  {# 0x32a4d30 #}
       jmp r11
 
-
-  - name: force_instant_cast_for_all_abilities
-    target_address: '0xefab99'
-    memory_content: '\x0f\x85\x0c\x08\x00\x00'  # jne 0xefb3ab
-    hook_functions: []
-    memory_overwrite: '\xe9\x0d\x08\x00\x00\x90'  # jmp 0xefb3ab + nop
-    target_process: 'Last Epoch.exe1'
-    base_file: 'GameAssembly.dll'
-    align_size: 6
-    overwritten_instructions: ''
-
+  # mask:
+  # 44 38 60 25 0f ?? ?? 08 00 00 0f b6 45 e0 0f b6 bd 20 01 00 00
+  # replace instructions:
+  # cmp byte [rax+0x25], r12b
+  # jne 0xefb3ab   # NOTE: this should be replaced too
+  # movzx eax, byte [rbp-0x20]
   # ClientUsingAbilityState__AttemptToUseOrPrepareAbility
+  # near: ClientUsingAbilityState__CancelPreparedAbility
   - name: ability_hook
-    target_address: '0xefab95'
-    memory_content: '\x44\x38\x60\x25\x0f\x85\x0c\x08\x00\x00\x0f\xb6\x45\xe0'
+    target_address: '0xefb525'
+    memory_content: '\x44\x38\x60\x25\x0f\x85'
     hook_functions:
       - le_lib_ability_hook
       #- le_lib_echo
@@ -95,8 +108,18 @@ hooks:
       add rax, 0xd
       jmp rax
       .ifzero:
-      mov rax, {# 0xefb3ab #}
+      mov rax, {# 0xefbd3b #}
       jmp rax
+
+  - name: force_instant_cast_for_all_abilities
+    target_address: '0xefab99'
+    memory_content: '\x0f\x85\x0c\x08\x00\x00'  # jne 0xefb3ab
+    hook_functions: []
+    memory_overwrite: '\xe9\x0d\x08\x00\x00\x90'  # jmp 0xefb3ab + nop
+    target_process: 'Last Epoch.exe1'
+    base_file: 'GameAssembly.dll'
+    align_size: 6
+    overwritten_instructions: ''
 
   - name: ability_hook_2
     target_address: '0xefab69'

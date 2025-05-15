@@ -57,7 +57,9 @@ hooks:
 ```
 
 ## TODO:
-* find how Aerial Assault is disrupting movement and disable it
+* python server to press keys with ydootol:
+  * hold ability key: when using aerial assault - trigger it and it should keep pressed `w` and `e` keys for a duration 2 seconds
+  * trigger healing when health is low (need to find where to hook this)
 * implement HookManager
   * stores all hooks
   * should use yaml file to converge existing applied hooks
