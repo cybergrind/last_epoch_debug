@@ -13,10 +13,10 @@ hooks:
     # xor edx, edx
     # call EpochInputManager$$GetInteractMoveButtonHold
     # test al, al
-    target_address: '0x1ec931a'
-    memory_content: '\xe8\x41\x71\xf3\xff'
+    target_address: '0x1ec92fa'
+    memory_content: '\xe8\x61\x71\xf3\xff'
     hook_functions: []
-    memory_overwrite: '\xe8\x91\x71\xf3\xff'
+    memory_overwrite: '\xe8\xb1\x71\xf3\xff'
     target_process: 'Last Epoch.exe'
     base_file: 'GameAssembly.dll'
     align_size: 5
@@ -27,11 +27,13 @@ hooks:
     # search for:
     # 48 8b 80 b8 00 00 00 48 8b 08 48 85 c9 74 ?? 45 33 c0 b2 01 e8 ?? ?? ?? ?? 48 8b 4c 24 40
     # asm disable with nops:
-    # in GroundItemLabelButton Update
+    # xor r8d, r8d
+    # mov dl, 1
     # call EpochInputManager__setShouldBlockMovementOnCurrentClickDownState
+    # in GroundItemLabelButton Update
     # replace call to EpochInputManager$$set_ShouldBlockMovementOnCurrentClickDownState
-    target_address: '0x1ec9377'
-    memory_content: '\xe8\x44\x35\xF4\xFF'
+    target_address: '0x1ec9357'
+    memory_content: '\xe8\x64\x35\xF4\xFF'
     hook_functions: []
     memory_overwrite: '\x90\x90\x90\x90\x90'
     target_process: 'Last Epoch.exe'
@@ -50,8 +52,8 @@ hooks:
     # call TMPro.TMP_Text$$SetText
     # NOTE: need to update TMP_SetText address too
     # NOTE: need to update pickup.rs -> GroundItemLabel__requestPickup
-    target_address: '0x1ecab03'
-    memory_content: '\x45\x33\xc9\x41\xb0\x01\x48\x8b\xd7\xe8\x1f\xa2\x3d\x01'
+    target_address: '0x1ecaae3'
+    memory_content: '\x45\x33\xc9\x41\xb0\x01\x48\x8b\xd7'
     hook_functions:
       #- le_lib_echo
       - le_lib_pickup
@@ -71,8 +73,8 @@ hooks:
       push r11
 
       ;; address for: TMPro.TMP_Text$$SetText
-      mov r11, {# 0x32a4d30 #}
-      ;; call  {# 0x32a4d30 #}
+      mov r11, {# 0x32a4d00 #}
+      ;; call  {# 0x32a4d00 #}
       jmp r11
 
   # mask:
@@ -111,6 +113,7 @@ hooks:
       mov rax, {# 0xefbd3b #}
       jmp rax
 
+  # IGNORE REST
   - name: force_instant_cast_for_all_abilities
     target_address: '0xefab99'
     memory_content: '\x0f\x85\x0c\x08\x00\x00'  # jne 0xefb3ab
