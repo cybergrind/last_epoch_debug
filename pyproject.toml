@@ -6,8 +6,10 @@ authors = [{ name = 'github.com/cybergrind' }]
 license = { text = 'Apache-2.0' }
 requires-python = '>=3.13'
 dependencies = [
+  "fastapi>=0.115.12",
   'ipython',
   "pydantic-settings>=2.9.1",
+  "uvicorn>=0.34.2",
 ]
 
 [project.scripts]

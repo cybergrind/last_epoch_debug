@@ -1,7 +1,9 @@
 use crate::echo::Registers;
 use crate::pickup::GameString;
+use lazy_static::lazy_static;
 #[allow(unused_imports)]
 use log::info;
+use std::sync::RwLock;
 
 #[repr(C)]
 #[derive(Debug)]
@@ -73,10 +75,10 @@ impl CastingData {
     pub fn set_instant_cast_from_ptr(ptr: u64) {
         unsafe {
             let inc_cast_speed_ptr = (ptr + 0x1c) as *mut f32;
-            *inc_cast_speed_ptr = 3e38;
+            *inc_cast_speed_ptr = 1000.0;
 
             let use_duration = (ptr + 0x7c) as *mut f32;
-            *use_duration = 0.001;
+            *use_duration = 0.03;
 
             // let use_delay = (ptr + 0x80) as *mut f32;
             // *use_delay = 0.001;
@@ -86,6 +88,50 @@ impl CastingData {
 
 // 731 - aerial assault
 const FORCE_INSTANT_CAST: &[u16] = &[731];
+const KEYPRESS_COOLDOWN: f32 = 0.2;
+lazy_static! {
+    static ref LAST_KEYPRESS: RwLock<f32> = RwLock::new(0.0);
+}
+
+pub fn is_on_cooldown() -> bool {
+    let last_keypress = LAST_KEYPRESS.read().unwrap();
+    let current_time = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f32();
+    if current_time - *last_keypress < KEYPRESS_COOLDOWN {
+        return true;
+    }
+    false
+}
+
+pub fn call_keypress_server(skill_name: &str) {
+    // should send GET request to http://{host}:8766/skill/{skill_name}
+    // use reqwest
+    if is_on_cooldown() {
+        return;
+    }
+    let url = format!("http://192.168.88.38:8766/skill/{}", skill_name);
+    match reqwest::blocking::get(&url) {
+        Ok(response) => {
+            if response.status().is_success() {
+                // info!("Successfully sent keypress for skill: {}", skill_name);
+            } else {
+                info!(
+                    "Failed to send keypress for skill: {}. Status: {}",
+                    skill_name,
+                    response.status()
+                );
+            }
+        }
+        Err(e) => {
+            info!(
+                "Error sending keypress for skill: {}. Error: {}",
+                skill_name, e
+            );
+        }
+    }
+}
 
 pub fn set_r8(registers_ptr: u64, value: u64) {
     unsafe {
@@ -138,6 +184,7 @@ pub fn le_lib_ability_hook(registers_ptr: u64) {
         //     casting_data.ability_id
         // );
         CastingData::set_instant_cast_from_ptr(registers.rax);
+        call_keypress_server(&ability_str);
         //set_r8(registers_ptr, 0x1);
         //let registers2 = Registers::from_saved_pointer(registers_ptr);
         //info!("registers.r8: {} vs {}", registers.r8, registers2.r8);
