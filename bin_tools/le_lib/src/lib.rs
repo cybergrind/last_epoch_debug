@@ -7,6 +7,8 @@ pub use hooks::echo;
 pub use hooks::echo::le_lib_echo;
 pub use hooks::pickup;
 pub use hooks::pickup::le_lib_pickup;
+pub use hooks::player_hook;
+pub use hooks::player_hook::le_lib_player_hook;
 pub use lib_init::le_lib_init;
 pub use low_level_tools::hook_tools::{le_lib_load_hook, le_lib_unload_hook};
 

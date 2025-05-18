@@ -113,6 +113,38 @@ hooks:
       mov rax, {# 0xefbd3b #}
       jmp rax
 
+  - name: player_hook
+    target_address: '0xd87fe7'
+    memory_content: '\xf2\x0f\x11'
+    hook_functions:
+      - le_lib_player_hook
+      #- le_lib_echo    
+    target_process: 'Last Epoch.exe1'
+    base_file: 'GameAssembly.dll'
+    align_size: 14
+    overwritten_instructions: |
+      ;; base is: {# 0x0 #}
+      movsd [rbx+0xb8], xmm0
+      mov dword [rbx+0xc0], eax
+
+  - name: potion_hook
+    target_address: '0x1e41c5c'
+    memory_content: '\xf3\x44\x0f'
+    hook_functions:
+      - le_lib_potion_hook
+      #- le_lib_echo
+    target_process: 'Last Epoch.exe1'
+    base_file: 'GameAssembly.dll'
+    align_size: 16
+    overwritten_instructions: |
+      ;; base is: {# 0x0 #}
+      movss xmm8, dword [rdi+0xc0]
+      mov rcx, {# 0x4137760 #}
+      mov rcx, qword [rcx]
+
+
+
+
   # IGNORE REST
   - name: force_instant_cast_for_all_abilities
     target_address: '0xefab99'
