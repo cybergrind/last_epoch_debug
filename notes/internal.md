@@ -36,5 +36,10 @@ rdi -- string
 x/1wx $rdi+0x10 -- number of bytes in string
 x/88bs $rdi+0x14 -- string total
 
+
+define xx
+  x/2s *(*$arg0+0x10)
+end
+
 ```
 

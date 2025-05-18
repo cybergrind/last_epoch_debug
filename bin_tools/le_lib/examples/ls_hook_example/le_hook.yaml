@@ -127,22 +127,26 @@ hooks:
       movsd [rbx+0xb8], xmm0
       mov dword [rbx+0xc0], eax
 
+  # UIGlobeHealth__OnUpdateTick
+  # mask:
+  # fe02488bbba000000083b9e00000000075
+  # replaced instructions:
+  # mov rcx, qword [rel 0x409c7d0]
+  # mov rdi, qword [rbx+0xa0]
   - name: potion_hook
-    target_address: '0x1e41c5c'
-    memory_content: '\xf3\x44\x0f'
+    target_address: '0x10b83e1'
+    memory_content: '\x48\x8b\x0d'
     hook_functions:
       - le_lib_potion_hook
       #- le_lib_echo
-    target_process: 'Last Epoch.exe1'
+    target_process: 'Last Epoch.exe'
     base_file: 'GameAssembly.dll'
-    align_size: 16
+    align_size: 14
     overwritten_instructions: |
       ;; base is: {# 0x0 #}
-      movss xmm8, dword [rdi+0xc0]
-      mov rcx, {# 0x4137760 #}
+      mov rcx, {# 0x409c7d0 #}
       mov rcx, qword [rcx]
-
-
+      mov rdi, qword [rbx+0xa0]
 
 
   # IGNORE REST

@@ -56,9 +56,29 @@ impl Actor {
 #[repr(C)]
 #[derive(Debug)]
 pub struct PlayerHealth {
-    _pad0: [u64; 0x2],
-    pub health_bar: *const u64,
-    pub yellow_bar: *const u64,
+    // drop this field from debug info
+    _pad0: [u32; 32],
+    pub max_health: f32,
+    pub health: f32,
+}
+impl PlayerHealth {
+    pub fn from_ptr(ptr: u64) -> Self {
+        if ptr == 0 {
+            info!("PlayerHealth: ptr is null");
+            return PlayerHealth {
+                _pad0: [0; 32],
+                max_health: 0.0,
+                health: 0.0,
+            };
+        }
+        unsafe {
+            let player_health = std::ptr::read(ptr as *const PlayerHealth);
+            return player_health;
+        }
+    }
+    pub fn debug_info(&self) {
+        info!("PlayerHealth: {}/{}", self.health, self.max_health);
+    }
 }
 
 #[repr(C)]
@@ -164,15 +184,15 @@ pub extern "C" fn le_lib_player_hook(registers_ptr: u64) {
 }
 
 lazy_static! {
-    static ref BASE_HEALTH_PTR: RwLock<u64> = RwLock::new(0);
+    static ref PLAYER_HEALTH_PTR: RwLock<u64> = RwLock::new(0);
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn le_lib_potion_hook(registers_ptr: u64) {
-    info!("le_lib_potion_hook called");
+pub extern "C" fn le_lib_health_hook(registers_ptr: u64) {
+    info!("le_lib_health_hook called");
     let registers = Registers::from_saved_pointer(registers_ptr);
-    let new_base_health = BaseHealth::from_ptr(registers.rdi);
-    let mut base_health = BASE_HEALTH_PTR.write().unwrap();
-    *base_health = registers.rdi;
-    info!("Base health: {:#?}", new_base_health);
+    let new_player_health = PlayerHealth::from_ptr(registers.rbx + 0xa0);
+    new_player_health.debug_info();
+    let mut player_health = PLAYER_HEALTH_PTR.write().unwrap();
+    *player_health = registers.rbx + 0xa0;
 }
