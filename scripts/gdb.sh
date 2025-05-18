@@ -1,4 +1,4 @@
-
+#!/usr/bin/env bash
 # run:
 # $WINELOADER '/home/kpi/games/SteamLibrary/steamapps/common/Proton - Experimental/files/lib/wine/x86_64-windows/winedbg.exe' --command "info proc" | ag Last
 # returns:
