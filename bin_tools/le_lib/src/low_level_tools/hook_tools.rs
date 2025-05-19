@@ -248,6 +248,7 @@ pub fn get_function_address(function_name: &str) -> Result<u64, String> {
         "le_lib_ability_hook" => Ok(crate::le_lib_ability_hook as u64),
         "le_lib_player_hook" => Ok(crate::le_lib_player_hook as u64),
         "le_lib_health_hook" => Ok(crate::hooks::player_hook::le_lib_health_hook as u64),
+        "le_lib_potions_hook" => Ok(crate::hooks::player_hook::le_lib_potions_hook as u64),
         _ => Err(format!("Unknown function: {}", function_name)),
     }
 }

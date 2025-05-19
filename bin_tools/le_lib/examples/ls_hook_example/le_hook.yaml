@@ -133,7 +133,7 @@ hooks:
   # replaced instructions:
   # mov rcx, qword [rel 0x409c7d0]
   # mov rdi, qword [rbx+0xa0]
-  - name: potion_hook
+  - name: health_hook
     target_address: '0x10b83e1'
     memory_content: '\x48\x8b\x0d'
     hook_functions:
@@ -147,6 +147,24 @@ hooks:
       mov rcx, {# 0x409c7d0 #}
       mov rcx, qword [rcx]
       mov rdi, qword [rbx+0xa0]
+
+  # PlayerActorSync__HandleMessageSyncPotionCharges
+  # mask:
+  # b94402488b88b8000000488b3948
+  - name: potions_hook
+    target_address: '0x1cd2f0d'
+    memory_content: '\x48\x8b\x05'
+    hook_functions:
+      - le_lib_potions_hook
+      #- le_lib_echo
+    target_process: 'Last Epoch.exe'
+    base_file: 'GameAssembly.dll'
+    align_size: 14
+    overwritten_instructions: |
+      ;; base is: {# 0x0 #}
+      mov rax, {# 0x411e898 #}
+      mov rax, qword [rax]
+      mov rcx, qword [rax+0xb8]
 
 
   # IGNORE REST

@@ -84,7 +84,7 @@ class Skill:
             log.info(f'Expect next call in: {next_call - t:.2f} seconds')
 
 
-POTION = Skill('potion', 'r', 8)
+POTION = Skill('potion', 'r', cooldown=8, ttl=4)
 
 SKILLS = {
     'dive_bomb': Skill('dive_bomb', 'e', 0.5, press_for=1),
@@ -94,6 +94,8 @@ SKILLS = {
     # 'heal': POTION,
 }
 
+AUTO_ACTIVATE = {'aerial assault', 'ballista'}
+
 
 @app.get('/skill/{skill_name}')
 async def activate_skill(skill_name: str):
@@ -101,9 +103,14 @@ async def activate_skill(skill_name: str):
     Activate a skill by its name.
     """
     log.info(f'Activating skill: {skill_name}')
-    if skill_name == 'aerial assault':
+    if skill_name in AUTO_ACTIVATE:
         for skill in SKILLS.values():
             await skill.activate()
+
+    if GLOBAL_POTIONS > MIN_POTIONS_TO_KEEP:
+        if not POTION.skill_loop_task:
+            await POTION.activate()
+
     return {'status': 'ok', 'skill': skill_name}
 
 
@@ -117,6 +124,34 @@ async def low_hp(data: LowHealth):
     log.info(f'Low health detected: {data.health}, max health: {data.max_health}')
     await POTION.use(with_lock=False)
     return {'status': 'ok', 'skill': 'heal'}
+
+
+class Potions(BaseModel):
+    charges: int
+    max_charges: int
+
+
+MAX_POTIONS_VALUE = 40
+MIN_POTIONS_TO_KEEP = 6
+GLOBAL_POTIONS = 0
+
+
+@app.post('/potions')
+async def potions(data: Potions):
+    if data.charges > MAX_POTIONS_VALUE:
+        return {'status': 'ignored'}
+
+    log.info(f'Potions detected: {data.charges}, max potions: {data.max_charges}')
+    global GLOBAL_POTIONS
+    GLOBAL_POTIONS = data.charges
+
+    first_skill = SKILLS['dive_bomb']
+    if not first_skill.skill_loop_task:
+        return {'status': 'skipped'}
+
+    if data.charges > MIN_POTIONS_TO_KEEP:
+        await POTION.activate()
+    return {'status': 'ok', 'skill': 'potion'}
 
 
 def parse_args():

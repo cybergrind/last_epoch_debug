@@ -1,4 +1,7 @@
-use crate::{echo::Registers, hooks::keypress_server::on_low_health};
+use crate::{
+    echo::Registers,
+    hooks::keypress_server::{on_low_health, on_potions_update},
+};
 use lazy_static::lazy_static;
 use log::info;
 use std::sync::RwLock;
@@ -62,4 +65,41 @@ pub extern "C" fn le_lib_health_hook(registers_ptr: u64) {
     }
     let mut player_health = PLAYER_HEALTH_PTR.write().unwrap();
     *player_health = registers.rbx + 0xa0;
+}
+
+#[repr(C)]
+#[derive(Debug)]
+struct PotionMessage {
+    pub charges: u32,
+    pub max_charges: u32,
+}
+impl PotionMessage {
+    pub fn from_ptr(ptr: u64) -> Self {
+        if ptr == 0 {
+            info!("PotionMessage: ptr is null");
+            return PotionMessage {
+                charges: 0,
+                max_charges: 0,
+            };
+        }
+        unsafe {
+            let potion_message = std::ptr::read(ptr as *const PotionMessage);
+            return potion_message;
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub fn le_lib_potions_hook(registers_ptr: u64) {
+    info!("le_lib_potions_hook called");
+    let registers = Registers::from_saved_pointer(registers_ptr);
+
+    let potion_message = PotionMessage::from_ptr(registers.rdx + 0x4);
+    info!(
+        "PotionMessage: charges: {}, max_charges: {}",
+        potion_message.charges, potion_message.max_charges
+    );
+    let charges = potion_message.charges;
+    let max_charges = potion_message.max_charges;
+    on_potions_update(charges, max_charges);
 }

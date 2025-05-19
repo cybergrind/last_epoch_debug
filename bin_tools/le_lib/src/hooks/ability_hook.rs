@@ -86,7 +86,8 @@ impl CastingData {
 }
 
 // 731 - aerial assault
-const FORCE_INSTANT_CAST: &[u16] = &[731];
+// 379 - ballista
+const FORCE_INSTANT_CAST: &[u16] = &[731, 379];
 
 pub fn set_r8(registers_ptr: u64, value: u64) {
     unsafe {
