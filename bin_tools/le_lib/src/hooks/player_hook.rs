@@ -42,7 +42,7 @@ lazy_static! {
     static ref PLAYER_HEALTH_PTR: RwLock<u64> = RwLock::new(0);
 }
 
-const LOW_HEALTH_THRESHOLD: f32 = 0.25;
+const LOW_HEALTH_THRESHOLD: f32 = 0.35;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn le_lib_health_hook(registers_ptr: u64) {
