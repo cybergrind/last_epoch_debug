@@ -137,7 +137,7 @@ hooks:
     target_address: '0x10b83e1'
     memory_content: '\x48\x8b\x0d'
     hook_functions:
-      - le_lib_potion_hook
+      - le_lib_health_hook
       #- le_lib_echo
     target_process: 'Last Epoch.exe'
     base_file: 'GameAssembly.dll'

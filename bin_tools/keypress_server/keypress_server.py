@@ -15,6 +15,7 @@ from subprocess import run
 import uvicorn
 from fastapi import FastAPI
 from keycodes import KEYCODES
+from pydantic import BaseModel
 
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
@@ -26,15 +27,18 @@ app = FastAPI()
 
 
 class Skill:
-    def __init__(self, name: str, key: str, cooldown: float, ttl: float = 3):
+    def __init__(
+        self, name: str, key: str, cooldown: float, ttl: float = 3, press_for: float = 0.0
+    ):
         self.name = name
         self.key = key
         self.cooldown = cooldown
         self.default_ttl = ttl
         self.ttl = 0
         self.last_used = 0
-        self.use_time = 0.01
+        self.use_time = 0.007
         self.skill_loop_task = None
+        self.press_for = press_for
 
     def key_action(self, key, down=True):
         down = 1 if down else 0
@@ -42,14 +46,20 @@ class Skill:
         run(cmd, shell=True)
         log.debug(f'{cmd=}')
 
-    async def use(self):
+    async def use(self, with_lock=True):
         # Use the skill (press the key)
         log.info(f'Using skill {self.name} ({self.key})')
         self.last_used = time.time()
-        async with SKILL_LOCK:
+        if with_lock:
+            async with SKILL_LOCK:
+                self.key_action(self.key, down=True)
+                await asyncio.sleep(self.use_time)
+        else:
             self.key_action(self.key, down=True)
             await asyncio.sleep(self.use_time)
-            self.key_action(self.key, down=False)
+        if self.press_for > 0:
+            await asyncio.sleep(self.press_for)
+        self.key_action(self.key, down=False)
 
     async def skill_loop(self):
         # Sleep until the cooldown is over
@@ -74,12 +84,14 @@ class Skill:
             log.info(f'Expect next call in: {next_call - t:.2f} seconds')
 
 
+POTION = Skill('potion', 'r', 8)
+
 SKILLS = {
-    'dive_bomb': Skill('dive_bomb', 'e', 0.5),
-    'falcon_strikes': Skill('falcon_strikes', 'w', 7),
+    'dive_bomb': Skill('dive_bomb', 'e', 0.5, press_for=1),
+    'falcon_strikes': Skill('falcon_strikes', 'w', 7, press_for=1),
     'smoke_bomb': Skill('smoke_bomb', 'q', 1),
     'decoy': Skill('decoy', 't', 8.6),
-    'heal': Skill('heal', 'r', 8),
+    # 'heal': POTION,
 }
 
 
@@ -93,6 +105,18 @@ async def activate_skill(skill_name: str):
         for skill in SKILLS.values():
             await skill.activate()
     return {'status': 'ok', 'skill': skill_name}
+
+
+class LowHealth(BaseModel):
+    health: float
+    max_health: float
+
+
+@app.post('/low_health')
+async def low_hp(data: LowHealth):
+    log.info(f'Low health detected: {data.health}, max health: {data.max_health}')
+    await POTION.use(with_lock=False)
+    return {'status': 'ok', 'skill': 'heal'}
 
 
 def parse_args():
