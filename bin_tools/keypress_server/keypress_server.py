@@ -93,8 +93,16 @@ SKILLS = {
     'decoy': Skill('decoy', 't', 8.6),
     # 'heal': POTION,
 }
+AUTO_ACTIVATE = {'aerial assault'}
 
-AUTO_ACTIVATE = {'aerial assault', 'ballista'}
+# SKILLS = {
+# 'dive_bomb': Skill('dive_bomb', 'e', 2.7, press_for=1),
+# # 'falcon_strikes': Skill('falcon_strikes', 'w', 7, press_for=1),
+# 'aerial_assault': Skill('smoke_bomb', 'q', 2.7),
+# 'decoy': Skill('decoy', 't', 10.8),
+# # 'heal': POTION,
+# }
+# AUTO_ACTIVATE = {'ballista'}
 
 
 @app.get('/skill/{skill_name}')
