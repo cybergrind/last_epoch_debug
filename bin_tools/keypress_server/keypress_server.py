@@ -51,13 +51,13 @@ class Skill:
 
         async def _delayed(uuid):
             cmd = f'ydotool key {self.keycode}:0'
-            await asucc(cmd, shell=True)
+            await asucc(cmd)
             for _ in range(3):
                 await asyncio.sleep(0.015)
                 if self.delayed_depress != uuid:
                     return
                 cmd = f'ydotool key {self.keycode}:0'
-                await asucc(cmd, shell=True)
+                await asucc(cmd)
 
         self.delayed_depress_task = asyncio.create_task(_delayed(uuid))
 
