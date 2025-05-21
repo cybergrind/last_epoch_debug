@@ -91,6 +91,19 @@ wheels = [
 ]
 
 [[package]]
+name = "fan-tools"
+version = "4.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pyyaml" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8a/cf/751a09d30426ced8da9cf5facbedb940bda415cff61647767d6d940fedf1/fan_tools-4.4.0.tar.gz", hash = "sha256:210b85b17aae6795996a10b31b3fd71a2abb753df25b3138e70cba4e4f490d05", size = 89771, upload-time = "2024-10-03T17:26:00.108Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b3/db/abf7267a12ac1fa3a626c3d7d22a98b3ec650f9dd259de72f1a36167f6d8/fan_tools-4.4.0-py2.py3-none-any.whl", hash = "sha256:0d49ff6d216180018d4d3578b26e02eeab70df76f38593736dbd2972030a7f83", size = 71605, upload-time = "2024-10-03T17:25:57.909Z" },
+]
+
+[[package]]
 name = "fastapi"
 version = "0.115.12"
 source = { registry = "https://pypi.org/simple" }
@@ -199,6 +212,7 @@ name = "last-epoch-scripts"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "fan-tools" },
     { name = "fastapi" },
     { name = "ipython" },
     { name = "pydantic-settings" },
@@ -215,6 +229,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "fan-tools", specifier = ">=4.4.0" },
     { name = "fastapi", specifier = ">=0.115.12" },
     { name = "ipython" },
     { name = "pydantic-settings", specifier = ">=2.9.1" },
