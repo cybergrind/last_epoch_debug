@@ -1,12 +1,14 @@
 use lazy_static::lazy_static;
 use log::info;
 use std::sync::{RwLock, RwLockWriteGuard};
+use threadpool::ThreadPool;
 
 const KEYPRESS_COOLDOWN: f32 = 0.2;
 const SERVER_BASE: &str = "http://192.168.88.38:8766";
 lazy_static! {
     static ref LAST_KEYPRESS: RwLock<f32> = RwLock::new(0.0);
     static ref LAST_POTION: RwLock<f32> = RwLock::new(0.0);
+    static ref POOL: ThreadPool = ThreadPool::new(4);
 }
 
 pub fn is_on_cooldown(cooldown: f32, mut cooldown_value: RwLockWriteGuard<f32>) -> bool {
@@ -22,31 +24,50 @@ pub fn is_on_cooldown(cooldown: f32, mut cooldown_value: RwLockWriteGuard<f32>) 
     false
 }
 
+fn get(url: &str) {
+    let url = url.to_string();
+    POOL.execute(move || {
+        let client = reqwest::blocking::Client::new();
+        match client.get(&url).send() {
+            Ok(response) => {
+                if response.status().is_success() {
+                } else {
+                    info!("Failed request: {}. Status: {}", url, response.status());
+                }
+            }
+            Err(e) => {
+                info!("Error sending: {}. Error: {}", url, e);
+            }
+        }
+    });
+}
+
+fn post<T: serde::Serialize>(url: &str, data: T) {
+    let url = url.to_string();
+    let data = serde_json::to_string(&data).unwrap();
+    POOL.execute(move || {
+        let client = reqwest::blocking::Client::new();
+        match client.post(&url).body(data).send() {
+            Ok(response) => {
+                if response.status().is_success() {
+                } else {
+                    info!("Failed request: {}. Status: {}", url, response.status());
+                }
+            }
+            Err(e) => {
+                info!("Error sending: {}. Error: {}", url, e);
+            }
+        }
+    });
+}
+
 pub fn on_skill_used(skill_name: &str) {
     // use reqwest
     if is_on_cooldown(KEYPRESS_COOLDOWN, LAST_KEYPRESS.write().unwrap()) {
         return;
     }
     let url = format!("{}/skill/{}", SERVER_BASE, skill_name);
-    match reqwest::blocking::get(&url) {
-        Ok(response) => {
-            if response.status().is_success() {
-                // info!("Successfully sent keypress for skill: {}", skill_name);
-            } else {
-                info!(
-                    "Failed to send keypress for skill: {}. Status: {}",
-                    skill_name,
-                    response.status()
-                );
-            }
-        }
-        Err(e) => {
-            info!(
-                "Error sending keypress for skill: {}. Error: {}",
-                skill_name, e
-            );
-        }
-    }
+    get(url.as_str());
 }
 
 #[derive(serde::Serialize)]
@@ -62,24 +83,7 @@ pub fn on_low_health(health: f32, max_health: f32) {
     let url = format!("{}/low_health", SERVER_BASE);
     let request = LowHealthRequest { health, max_health };
 
-    match reqwest::blocking::Client::new()
-        .post(&url)
-        .json(&request)
-        .send()
-    {
-        Ok(response) => {
-            if response.status().is_success() {
-            } else {
-                info!(
-                    "Failed to send low health data. Status: {}",
-                    response.status()
-                );
-            }
-        }
-        Err(e) => {
-            info!("Error sending low health data. Error: {}", e);
-        }
-    }
+    post(url.as_str(), &request);
 }
 
 #[derive(serde::Serialize)]
@@ -95,22 +99,5 @@ pub fn on_potions_update(charges: u32, max_charges: u32) {
         max_charges,
     };
 
-    match reqwest::blocking::Client::new()
-        .post(&url)
-        .json(&request)
-        .send()
-    {
-        Ok(response) => {
-            if response.status().is_success() {
-            } else {
-                info!(
-                    "Failed to send potions update. Status: {}",
-                    response.status()
-                );
-            }
-        }
-        Err(e) => {
-            info!("Error sending potions update. Error: {}", e);
-        }
-    }
+    post(url.as_str(), &request);
 }

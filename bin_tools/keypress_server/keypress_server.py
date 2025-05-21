@@ -11,8 +11,10 @@ import asyncio
 import logging
 import time
 from subprocess import run
+from uuid import uuid4
 
 import uvicorn
+from fan_tools.unix import asucc
 from fastapi import FastAPI
 from keycodes import KEYCODES
 from pydantic import BaseModel
@@ -22,7 +24,6 @@ logging.basicConfig(level=logging.DEBUG, format='%(asctime)s [%(levelname)s] %(n
 log = logging.getLogger('keypress_server')
 
 
-SKILL_LOCK = asyncio.Lock()
 app = FastAPI()
 
 
@@ -32,34 +33,45 @@ class Skill:
     ):
         self.name = name
         self.key = key
+        self.keycode = KEYCODES[key]
         self.cooldown = cooldown
         self.default_ttl = ttl
         self.ttl = 0
         self.last_used = 0
-        self.use_time = 0.007
+        self.use_time = 0.0
         self.skill_loop_task = None
         self.press_for = press_for
+        self.delayed_depress = None
+        self.delayed_depress_task = None
 
-    def key_action(self, key, down=True):
-        down = 1 if down else 0
-        cmd = f'ydotool key {KEYCODES[key]}:{down}'
+    def delayed_depress_action(self):
+        # Delay the key press for a short time
+        uuid = uuid4()
+        self.delayed_depress = uuid
+
+        async def _delayed(uuid):
+            cmd = f'ydotool key {self.keycode}:0'
+            await asucc(cmd, shell=True)
+            for _ in range(3):
+                await asyncio.sleep(0.015)
+                if self.delayed_depress != uuid:
+                    return
+                cmd = f'ydotool key {self.keycode}:0'
+                await asucc(cmd, shell=True)
+
+        self.delayed_depress_task = asyncio.create_task(_delayed(uuid))
+
+    def key_action(self):
+        cmd = f'ydotool key {self.keycode}:0 {self.keycode}:1 {self.keycode}:0'
         run(cmd, shell=True)
         log.debug(f'{cmd=}')
+        self.delayed_depress_action()
 
     async def use(self, with_lock=True):
         # Use the skill (press the key)
         log.info(f'Using skill {self.name} ({self.key})')
         self.last_used = time.time()
-        if with_lock:
-            async with SKILL_LOCK:
-                self.key_action(self.key, down=True)
-                await asyncio.sleep(self.use_time)
-        else:
-            self.key_action(self.key, down=True)
-            await asyncio.sleep(self.use_time)
-        if self.press_for > 0:
-            await asyncio.sleep(self.press_for)
-        self.key_action(self.key, down=False)
+        self.key_action()
 
     async def skill_loop(self):
         # Sleep until the cooldown is over
@@ -87,10 +99,10 @@ class Skill:
 POTION = Skill('potion', 'r', cooldown=8, ttl=4)
 
 SKILLS = {
-    'dive_bomb': Skill('dive_bomb', 'e', 0.5, press_for=1),
-    'falcon_strikes': Skill('falcon_strikes', 'w', 7, press_for=1),
-    'smoke_bomb': Skill('smoke_bomb', 'q', 1),
-    'decoy': Skill('decoy', 't', 8.6),
+    'dive_bomb': Skill('dive_bomb', 'e', 0.5, press_for=0.0),
+    'falcon_strikes': Skill('falcon_strikes', 'w', 1, press_for=0.0),
+    'smoke_bomb': Skill('smoke_bomb', 'q', 1, press_for=0.0),
+    'decoy': Skill('decoy', 't', 3.6, press_for=0.0),
     # 'heal': POTION,
 }
 AUTO_ACTIVATE = {'aerial assault'}

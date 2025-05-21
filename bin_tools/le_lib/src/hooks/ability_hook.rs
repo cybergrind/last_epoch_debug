@@ -74,13 +74,13 @@ impl CastingData {
     pub fn set_instant_cast_from_ptr(ptr: u64) {
         unsafe {
             let inc_cast_speed_ptr = (ptr + 0x1c) as *mut f32;
-            *inc_cast_speed_ptr = 100.0;
+            *inc_cast_speed_ptr *= 2e38;
 
             let use_duration = (ptr + 0x7c) as *mut f32;
-            *use_duration = 0.07;
+            *use_duration = 0.0;
 
-            // let use_delay = (ptr + 0x80) as *mut f32;
-            // *use_delay = 0.001;
+            let use_delay = (ptr + 0x80) as *mut f32;
+            *use_delay = 0.001;
         }
     }
 }
