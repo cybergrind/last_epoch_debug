@@ -177,18 +177,3 @@ hooks:
     base_file: 'GameAssembly.dll'
     align_size: 6
     overwritten_instructions: ''
-
-  - name: ability_hook_2
-    target_address: '0xefab69'
-    memory_content: '\x89u\x08H\x8dL$p\xf2\x0f\x11t$p'
-    hook_functions:
-      - le_lib_ability_hook
-      #- le_lib_echo
-    target_process: 'Last Epoch.exei1'
-    base_file: 'GameAssembly.dll'
-    align_size: 14
-    overwritten_instructions: |
-      ;; base is: {# 0x0 #}
-      mov dword [rbp+0x8], esi
-      lea rcx, [rsp+0x70]
-      movsd qword [rsp+0x70], xmm6

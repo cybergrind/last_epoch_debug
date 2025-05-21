@@ -10,7 +10,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 // GroundItemLabel.requestPickup
 const PICKUP_RELATIVE_PTR: u64 = 0x1ecb600;
-const GOOD_POINTER: u64 = 0x1ec6eb7;
 const AUTOPICKUP_ALWAYS: &[&str] = &[" charm", " key"];
 const AUTOPICKUP_PARTS: &[&str] = &["shard", "glyph", "rune of", " charm", " key"];
 const NO_AUTOPICKUP_PARTS: &[&str] = &[];
@@ -367,7 +366,6 @@ pub extern "C" fn le_lib_pickup(registers_ptr: u64) {
     let string_ptr = registers.rdi;
 
     let se = StackExplorer::new(registers.rsp + 0xf0, false);
-    let is_good_pointer = se.var1 == (GOOD_POINTER + se.dll_base_address);
 
     let game_string = GameString::read_from_ptr(string_ptr);
 
@@ -396,7 +394,7 @@ pub extern "C" fn le_lib_pickup(registers_ptr: u64) {
         || GOOD_HEXS.contains(&item_label.hex().as_str())
         || is_autopickup_always(game_string.clone());
 
-    if is_good || is_good_pointer {
+    if is_good {
         let pickup_ptr = se.dll_base_address + PICKUP_RELATIVE_PTR;
         info!(
             "1. calling pickup_ptr: {:#X} relative: {:#X}",
