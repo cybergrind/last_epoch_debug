@@ -4,7 +4,7 @@ from os.path import exists
 from binaryninja import *
 
 
-SKIP_TYPES = 'SKIP_ALL_TYPES'
+SKIP_TYPES = 'skip_all_types'
 GLOBAL_SCRIPT_JSON = None
 
 

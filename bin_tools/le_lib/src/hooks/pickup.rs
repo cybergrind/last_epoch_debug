@@ -9,7 +9,9 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // GroundItemLabel.requestPickup
-const PICKUP_RELATIVE_PTR: u64 = 0x1ecb600;
+// mask:
+// 48895c2410564883ec3080????865c0200
+const PICKUP_RELATIVE_PTR: u64 = 0x1ee4570;
 const AUTOPICKUP_ALWAYS: &[&str] = &[" charm", " key"];
 const AUTOPICKUP_PARTS: &[&str] = &["shard", "glyph", "rune of", " charm", " key"];
 const NO_AUTOPICKUP_PARTS: &[&str] = &[];

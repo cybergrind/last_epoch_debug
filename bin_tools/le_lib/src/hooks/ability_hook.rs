@@ -111,7 +111,7 @@ pub fn le_lib_ability_hook(registers_ptr: u64) {
     let casting_data_ptr = registers.rax;
 
     // copy value of instant_cast to r9
-    let instant_cast_ptr = (casting_data_ptr + 0x25) as *const u8;
+    let instant_cast_ptr = (casting_data_ptr + 0x29) as *const u8;
     let instant_cast = unsafe { *instant_cast_ptr };
     set_r8(registers_ptr, instant_cast as u64);
 

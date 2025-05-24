@@ -96,9 +96,9 @@ class Skill:
             log.info(f'Expect next call in: {next_call - t:.2f} seconds')
 
 
-POTION = Skill('potion', 'r', cooldown=8, ttl=4)
+POTION = Skill('potion', 'r', cooldown=3.9, ttl=4)
 
-SKILLS = {
+SKILLS_UMBRAL = {
     'dive_bomb': Skill('dive_bomb', 'e', 0.5, press_for=0.0),
     'falcon_strikes': Skill('falcon_strikes', 'w', 1, press_for=0.0),
     'smoke_bomb': Skill('smoke_bomb', 'q', 1, press_for=0.0),
@@ -107,14 +107,17 @@ SKILLS = {
 }
 AUTO_ACTIVATE = {'aerial assault'}
 
-# SKILLS = {
-# 'dive_bomb': Skill('dive_bomb', 'e', 2.7, press_for=1),
-# # 'falcon_strikes': Skill('falcon_strikes', 'w', 7, press_for=1),
-# 'aerial_assault': Skill('smoke_bomb', 'q', 2.7),
-# 'decoy': Skill('decoy', 't', 10.8),
-# # 'heal': POTION,
-# }
-# AUTO_ACTIVATE = {'ballista'}
+SKILLS_BALLISTA = {
+    # 'dive_bomb': Skill('dive_bomb', 'e', 2.7, press_for=0),
+    # 'falcon_strikes': Skill('falcon_strikes', 'w', 7, press_for=1),
+    'smoke_bomb': Skill('smoke_bomb', 'q', 5, press_for=0),
+    'aerial_assault': Skill('aerial_assault', 'w', 3.6, press_for=0),
+    'decoy': Skill('decoy', 't', 10.8),
+    # 'heal': POTION,
+}
+AUTO_ACTIVATE = {'ballista'}
+
+SKILLS = SKILLS_UMBRAL
 
 
 @app.get('/skill/{skill_name}')
@@ -122,10 +125,16 @@ async def activate_skill(skill_name: str):
     """
     Activate a skill by its name.
     """
+    global SKILLS
     log.info(f'Activating skill: {skill_name}')
-    if skill_name in AUTO_ACTIVATE:
-        for skill in SKILLS.values():
-            await skill.activate()
+    if not SKILLS:
+        if skill_name == 'ballista':
+            SKILLS = SKILLS_BALLISTA
+        elif skill_name == 'aerial_assault':
+            SKILLS = SKILLS_UMBRAL
+
+    for skill in SKILLS.values():
+        await skill.activate()
 
     if GLOBAL_POTIONS > MIN_POTIONS_TO_KEEP:
         if not POTION.skill_loop_task:
@@ -165,7 +174,7 @@ async def potions(data: Potions):
     global GLOBAL_POTIONS
     GLOBAL_POTIONS = data.charges
 
-    first_skill = SKILLS['dive_bomb']
+    first_skill = SKILLS['smoke_bomb']
     if not first_skill.skill_loop_task:
         return {'status': 'skipped'}
 

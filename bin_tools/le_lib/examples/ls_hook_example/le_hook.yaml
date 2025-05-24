@@ -13,10 +13,10 @@ hooks:
     # xor edx, edx
     # call EpochInputManager$$GetInteractMoveButtonHold
     # test al, al
-    target_address: '0x1ec92fa'
-    memory_content: '\xe8\x61\x71\xf3\xff'
+    target_address: '0x1ee222a'
+    memory_content: '\xe8\xd1\x6c\xf3\xff'
     hook_functions: []
-    memory_overwrite: '\xe8\xb1\x71\xf3\xff'
+    memory_overwrite: '\xe8\x21\x6d\xf3\xff'
     target_process: 'Last Epoch.exe'
     base_file: 'GameAssembly.dll'
     align_size: 5
@@ -32,8 +32,8 @@ hooks:
     # call EpochInputManager__setShouldBlockMovementOnCurrentClickDownState
     # in GroundItemLabelButton Update
     # replace call to EpochInputManager$$set_ShouldBlockMovementOnCurrentClickDownState
-    target_address: '0x1ec9357'
-    memory_content: '\xe8\x64\x35\xF4\xFF'
+    target_address: '0x1ee2287'
+    memory_content: '\xe8\xc4\x30\xF4\xFF'
     hook_functions: []
     memory_overwrite: '\x90\x90\x90\x90\x90'
     target_process: 'Last Epoch.exe'
@@ -52,7 +52,7 @@ hooks:
     # call TMPro.TMP_Text$$SetText
     # NOTE: need to update TMP_SetText address too
     # NOTE: need to update pickup.rs -> GroundItemLabel__requestPickup
-    target_address: '0x1ecaae3'
+    target_address: '0x1ee3a13'
     memory_content: '\x45\x33\xc9\x41\xb0\x01\x48\x8b\xd7'
     hook_functions:
       #- le_lib_echo
@@ -73,8 +73,8 @@ hooks:
       push r11
 
       ;; address for: TMPro.TMP_Text$$SetText
-      mov r11, {# 0x32a4d00 #}
-      ;; call  {# 0x32a4d00 #}
+      mov r11, {# 0x32befc0 #}
+      ;; call  {# 0x32befc0 #}
       jmp r11
 
   # mask:
@@ -86,8 +86,8 @@ hooks:
   # ClientUsingAbilityState__AttemptToUseOrPrepareAbility
   # near: ClientUsingAbilityState__CancelPreparedAbility
   - name: ability_hook
-    target_address: '0xefb525'
-    memory_content: '\x44\x38\x60\x25\x0f\x85'
+    target_address: '0xf0ed27'
+    memory_content: '\x44\x38\x60\x29\x0f\x85'
     hook_functions:
       - le_lib_ability_hook
       #- le_lib_echo
@@ -110,31 +110,17 @@ hooks:
       add rax, 0xd
       jmp rax
       .ifzero:
-      mov rax, {# 0xefbd3b #}
+      mov rax, {# 0xf0f54e #}
       jmp rax
-
-  - name: player_hook
-    target_address: '0xd87fe7'
-    memory_content: '\xf2\x0f\x11'
-    hook_functions:
-      - le_lib_player_hook
-      #- le_lib_echo    
-    target_process: 'Last Epoch.exe1'
-    base_file: 'GameAssembly.dll'
-    align_size: 14
-    overwritten_instructions: |
-      ;; base is: {# 0x0 #}
-      movsd [rbx+0xb8], xmm0
-      mov dword [rbx+0xc0], eax
 
   # UIGlobeHealth__OnUpdateTick
   # mask:
-  # fe02488bbba000000083b9e00000000075
+  # ff02488bbba000000083b9e00000000075
   # replaced instructions:
   # mov rcx, qword [rel 0x409c7d0]
   # mov rdi, qword [rbx+0xa0]
   - name: health_hook
-    target_address: '0x10b83e1'
+    target_address: '0x10cbde1'
     memory_content: '\x48\x8b\x0d'
     hook_functions:
       - le_lib_health_hook
@@ -144,15 +130,15 @@ hooks:
     align_size: 14
     overwritten_instructions: |
       ;; base is: {# 0x0 #}
-      mov rcx, {# 0x409c7d0 #}
+      mov rcx, {# 0x40bbe00 #}
       mov rcx, qword [rcx]
       mov rdi, qword [rbx+0xa0]
 
   # PlayerActorSync__HandleMessageSyncPotionCharges
   # mask:
-  # b94402488b88b8000000488b3948
+  # 55??4402488b88b8000000488b3948
   - name: potions_hook
-    target_address: '0x1cd2f0d'
+    target_address: '0x1ceb4fd'
     memory_content: '\x48\x8b\x05'
     hook_functions:
       - le_lib_potions_hook
@@ -162,7 +148,7 @@ hooks:
     align_size: 14
     overwritten_instructions: |
       ;; base is: {# 0x0 #}
-      mov rax, {# 0x411e898 #}
+      mov rax, {# 0x413dec8 #}
       mov rax, qword [rax]
       mov rcx, qword [rax+0xb8]
 
