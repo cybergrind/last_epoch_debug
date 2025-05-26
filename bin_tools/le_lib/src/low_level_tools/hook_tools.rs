@@ -13,7 +13,7 @@ use crate::low_level_tools::templates::render_jumper;
 use crate::low_level_tools::templates::render_trampoline;
 use crate::low_level_tools::{compiler, injector};
 use crate::system_tools::MemoryMap;
-use crate::system_tools::maps::get_memory_map_guard;
+use crate::system_tools::maps::get_memory_map_guard_blocking;
 use crate::wine_hooks;
 
 // Structure to represent a hook configuration
@@ -68,14 +68,25 @@ pub fn get_module_base_address(module_name: &str) -> Option<u64> {
             }
         }
     }
+    let map = get_memory_map_guard_blocking();
 
-    get_memory_map_guard()
-        .unwrap()
-        // Use the MEMORY_MAP to find the base address of the module
-        // This assumes that MEMORY_MAP is a global or static instance of MemoryMap
-        // and has been initialized with the current process's memory map.
-        .get_entry_by_name(module_name)
-        .and_then(|entry| Some(entry.get_address()))
+    let entry = match map.get_entry_by_name(module_name) {
+        Some(entry) => entry,
+        None => {
+            return None;
+        }
+    };
+    Some(entry.get_address())
+}
+
+pub fn get_module_base_address_blocking(module_name: &str) -> u64 {
+    // This function blocks until the module is found
+    loop {
+        if let Some(address) = get_module_base_address(module_name) {
+            return address;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 }
 
 /// Loads hooks from the specified YAML configuration file
@@ -415,7 +426,14 @@ unsafe fn compile_and_inject_hook(hook: &Hook) -> Result<ActiveHook, String> {
 
 pub fn get_only_matching_hooks(process_name: &str) -> Vec<Hook> {
     // Filter hooks based on the process name
-    let hooks_config = load_hooks_config().unwrap();
+    let hooks_config = match load_hooks_config() {
+        Ok(config) => config,
+        Err(e) => {
+            error!("Failed to load hooks configuration: {}", e);
+            return vec![];
+        }
+    };
+
     hooks_config
         .hooks
         .into_iter()

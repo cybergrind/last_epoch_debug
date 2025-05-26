@@ -1,9 +1,9 @@
 use crate::constants::GAME_DLL;
 use crate::echo::Registers;
-use crate::low_level_tools::hook_tools::get_module_base_address;
+use crate::low_level_tools::hook_tools::get_module_base_address_blocking;
 use colored::Colorize;
 use lazy_static::lazy_static;
-use log::info;
+use log::{debug, info};
 use std::fmt::Debug;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -198,7 +198,7 @@ impl StackExplorer {
         let from_pointer = unsafe { &*(base_address as *const StackFromPointer) };
         StackExplorer {
             only_code_pointers,
-            dll_base_address: get_module_base_address(GAME_DLL).unwrap(),
+            dll_base_address: get_module_base_address_blocking(GAME_DLL),
             base_address,
             var0: from_pointer.var0,
             var1: from_pointer.var1,
@@ -284,16 +284,6 @@ pub fn call_window_function(function_ptr: u64, arg1: u64, arg2: u64, arg3: u64, 
     arg2 = rdx
     arg3 = r8
     arg4 = r9
-
-     */
-    //let mut result: u64 = 0;
-    /*
-    info!("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-    info!("Calling function at: {:#X}", function_ptr);
-    info!("Arguments: {:#X} {:#X} {:#X} {:#X}", arg1, arg2, arg3, arg4);
-    info!("flushing stdout");
-    std::io::stdout().flush().unwrap();
-    info!("flushed stdout");
     */
 
     unsafe {
@@ -378,15 +368,15 @@ pub extern "C" fn le_lib_pickup(registers_ptr: u64) {
     } else {
         se.var1
     };
-    info!(
+    debug!(
         "GameString: {:?} BT Address: {:#X}",
         game_string, current_var1
     );
 
-    info!("Pickup item label: {:?}", item_label);
+    debug!("Pickup item label: {:?}", item_label);
 
     if item_label.rule_outcome == 1 {
-        info!("Item label is 1, skipping pickup");
+        debug!("Item label is 1, skipping pickup");
         return;
     }
 

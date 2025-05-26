@@ -29,8 +29,8 @@ pub fn initialize_logger() {
     let current_proc_name = hook_tools::get_process_name_from_proc();
     let log_pattern_with_pid = format!("[PID: {}] {}", current_pid, constants::LOG_PATTERN);
     let level = match current_proc_name.ends_with(constants::GAME_NAME) {
-        true => LevelFilter::Debug, // Adjust log level for the game executable
-        _ => LevelFilter::Warn,     // Default log level for other executables
+        true => LevelFilter::Info, // Adjust log level for the game executable
+        _ => LevelFilter::Warn,    // Default log level for other executables
     };
     INIT.call_once(|| {
         let config = log4rs::append::file::FileAppender::builder()

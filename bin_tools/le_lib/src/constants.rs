@@ -13,3 +13,5 @@ pub fn get_hooks_config_path() -> String {
 }
 pub const GAME_DLL: &str = "GameAssembly.dll";
 pub const GAME_NAME: &str = "Last Epoch.exe";
+
+pub const SCAN_INTERVAL_MS: u64 = 15000;

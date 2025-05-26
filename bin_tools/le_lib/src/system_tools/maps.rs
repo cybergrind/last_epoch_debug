@@ -237,6 +237,18 @@ pub fn get_memory_map_guard() -> Option<RwLockReadGuard<'static, MemoryMap>> {
     }
 }
 
+pub fn get_memory_map_guard_blocking() -> RwLockReadGuard<'static, MemoryMap> {
+    loop {
+        match MEMORY_MAP.read() {
+            Ok(guard) => return guard,
+            Err(std::sync::PoisonError { .. }) => {
+                warn!("Memory map mutex was poisoned, retrying");
+                continue; // Retry until we get a valid guard
+            }
+        }
+    }
+}
+
 // Add the global scan method that internally locks the mutex
 impl MemoryMap {
     /// Scan memory maps, with thread safety built-in

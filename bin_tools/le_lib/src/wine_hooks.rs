@@ -1,6 +1,7 @@
+use crate::constants::SCAN_INTERVAL_MS;
 use crate::lib_init::notify_dll_loaded;
 use crate::low_level_tools::hook_tools::{self, Hook, le_lib_load_hook, memory_content_to_bytes};
-use crate::system_tools::maps;
+use crate::system_tools::maps::{self, get_memory_map_guard_blocking};
 use crate::system_tools::maps::{MemoryMap, get_memory_map_guard};
 use lazy_static::lazy_static;
 use log::{debug, error, info, warn};
@@ -33,7 +34,6 @@ lazy_static! {
 }
 
 // Interval between memory map scans (in milliseconds)
-const SCAN_INTERVAL_MS: u64 = 5000;
 
 // Scan for new loaded modules using system_tools::maps
 fn scan_proc_maps() {
@@ -51,13 +51,7 @@ fn scan_proc_maps() {
 
         process_module(path, entry.get_address(), &mut known_modules);
     }
-    let map = match get_memory_map_guard() {
-        Some(guard) => guard,
-        None => {
-            warn!("Failed to get memory map guard during scan");
-            return;
-        }
-    };
+    let map = get_memory_map_guard_blocking();
     le_lib_load_hook(&map);
 }
 
@@ -93,9 +87,6 @@ fn process_module(path: &str, address: u64, known_modules: &mut HashSet<String>)
 
     // Add to known modules
     known_modules.insert(path.to_string());
-
-    // info!("Detected new module: {}", path);
-    // info!("Total mmap calls: {}", *CALLS_COUNTER.lock().unwrap());
 
     // Extract the base module name from path
     let base_name = Path::new(path)
