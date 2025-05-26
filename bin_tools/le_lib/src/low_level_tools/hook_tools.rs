@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs;
-use std::ptr;
 #[cfg(test)]
 use std::sync::RwLock;
 use std::sync::{Mutex, Once};
@@ -13,7 +12,9 @@ use crate::constants::get_hooks_config_path;
 use crate::low_level_tools::templates::render_jumper;
 use crate::low_level_tools::templates::render_trampoline;
 use crate::low_level_tools::{compiler, injector};
-use crate::system_tools::MEMORY_MAP;
+use crate::system_tools::MemoryMap;
+use crate::system_tools::maps::get_memory_map_guard;
+use crate::wine_hooks;
 
 // Structure to represent a hook configuration
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -52,158 +53,6 @@ lazy_static! {
     static ref ACTIVE_HOOKS: Mutex<HashMap<String, ActiveHook>> = Mutex::new(HashMap::new());
 }
 
-/// Safely checks if memory at the given address is accessible
-/// Returns true if the memory is mapped (even if it has no permissions)
-/// so that we can try to modify the permissions before accessing
-pub fn is_memory_accessible(address: u64, size: usize) -> bool {
-    // Check for null address early
-    if address == 0 {
-        return false;
-    }
-
-    // Check if the memory region is mapped in our process
-    let is_mapped = check_memory_mapped(address, size);
-    if !is_mapped {
-        return false;
-    }
-
-    // For injection purposes, we care if the memory is mapped, even if permissions
-    // are restrictive. We'll try to change permissions before access.
-    true
-}
-
-/// Special handling for Wine memory access
-/// We need to take extra care when accessing memory in Wine processes
-pub fn is_wine_process() -> bool {
-    // Check if this process is running under Wine
-    // Look for Wine-specific environment variables or files
-    use std::env;
-
-    if let Ok(wineprefix) = env::var("WINEPREFIX") {
-        return !wineprefix.is_empty();
-    }
-
-    if let Ok(winedebug) = env::var("WINEDEBUG") {
-        return !winedebug.is_empty();
-    }
-
-    // Check if wine libraries are loaded in the process
-    let maps_path = "/proc/self/maps";
-    if let Ok(content) = std::fs::read_to_string(maps_path) {
-        if content.contains("wine") || content.contains("ntdll.so") {
-            return true;
-        }
-    }
-
-    false
-}
-
-/// Get memory permissions from /proc/self/maps
-pub fn get_memory_permissions(address: u64) -> Option<String> {
-    use std::fs::File;
-    use std::io::{BufRead, BufReader};
-
-    let maps_path = "/proc/self/maps";
-    match File::open(maps_path) {
-        Ok(file) => {
-            let reader = BufReader::new(file);
-
-            for line in reader.lines().filter_map(Result::ok) {
-                // Parse address range from line like: "7f9d80617000-7f9d80619000 r-xp ..."
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 2 {
-                    let addr_range = parts[0];
-                    let perms = parts[1];
-
-                    let addr_parts: Vec<&str> = addr_range.split('-').collect();
-                    if addr_parts.len() == 2 {
-                        if let (Ok(start), Ok(end)) = (
-                            u64::from_str_radix(addr_parts[0], 16),
-                            u64::from_str_radix(addr_parts[1], 16),
-                        ) {
-                            if address >= start && address < end {
-                                return Some(perms.to_string());
-                            }
-                        }
-                    }
-                }
-            }
-            None
-        }
-        Err(_) => None,
-    }
-}
-
-/// Check if a memory region is mapped in the process by reading /proc/self/maps
-fn check_memory_mapped(address: u64, size: usize) -> bool {
-    use std::fs::File;
-    use std::io::{BufRead, BufReader};
-
-    // Early check for null or very low addresses which are typically protected
-    if address < 0x1000 {
-        error!(
-            "Address 0x{:x} is too low (likely reserved/protected)",
-            address
-        );
-        return false;
-    }
-
-    // Early check for very large or suspiciously large sizes
-    if size > 1024 * 1024 * 10 {
-        // 10MB limit
-        error!("Size {} is too large for safe memory operation", size);
-        return false;
-    }
-
-    let maps_path = "/proc/self/maps";
-    let file = match File::open(maps_path) {
-        Ok(f) => f,
-        Err(e) => {
-            error!("Failed to open {}: {}", maps_path, e);
-            return false;
-        }
-    };
-
-    let reader = BufReader::new(file);
-    let end_address = address + size as u64;
-
-    info!(
-        "Checking if memory region 0x{:x} - 0x{:x} is mapped",
-        address, end_address
-    );
-
-    for line in reader.lines().filter_map(Result::ok) {
-        // Parse address range from line like: "7f9d80617000-7f9d80619000 r-xp ..."
-        if let Some(addr_range) = line.split_whitespace().next() {
-            let parts: Vec<&str> = addr_range.split('-').collect();
-            if parts.len() == 2 {
-                if let (Ok(start), Ok(end)) = (
-                    u64::from_str_radix(parts[0], 16),
-                    u64::from_str_radix(parts[1], 16),
-                ) {
-                    // Check if our target address range overlaps with this mapped range
-                    if address >= start && end_address <= end {
-                        info!(
-                            "Memory region 0x{:x} - 0x{:x} is mapped in range 0x{:x} - 0x{:x}",
-                            address, end_address, start, end
-                        );
-                        // Also extract and log permissions
-                        let perms = line.split_whitespace().nth(1).unwrap_or("-");
-                        info!("Permissions for this memory region: {}", perms);
-                        return true;
-                    }
-                }
-            }
-        }
-    }
-
-    error!(
-        "Memory region 0x{:x} - 0x{:x} is NOT mapped in process space",
-        address, end_address
-    );
-    false
-}
-
 #[cfg(test)]
 lazy_static! {
     static ref MOCKED_MODULE_BASE_ADDRESS: RwLock<Option<u64>> = RwLock::new(None);
@@ -220,18 +69,28 @@ pub fn get_module_base_address(module_name: &str) -> Option<u64> {
         }
     }
 
-    MEMORY_MAP
-        .lock()
+    get_memory_map_guard()
         .unwrap()
+        // Use the MEMORY_MAP to find the base address of the module
+        // This assumes that MEMORY_MAP is a global or static instance of MemoryMap
+        // and has been initialized with the current process's memory map.
         .get_entry_by_name(module_name)
         .and_then(|entry| Some(entry.get_address()))
 }
 
 /// Loads hooks from the specified YAML configuration file
 pub fn load_hooks_config() -> Result<HooksConfig, String> {
-    match fs::read_to_string(get_hooks_config_path()) {
+    let path = get_hooks_config_path();
+    info!("Loading hooks configuration from: {}", path);
+    match fs::read_to_string(path) {
         Ok(yaml_content) => match serde_yaml::from_str::<HooksConfig>(&yaml_content) {
-            Ok(config) => Ok(config),
+            Ok(config) => {
+                info!(
+                    "Successfully loaded hooks configuration with {} hooks",
+                    config.hooks.len()
+                );
+                Ok(config)
+            }
             Err(e) => Err(format!("Failed to parse hooks YAML: {}", e)),
         },
         Err(e) => Err(format!("Failed to read hooks config file: {}", e)),
@@ -313,9 +172,13 @@ pub fn memory_content_to_bytes(content: &str) -> Vec<u8> {
 }
 
 /// Calculate the real target address, considering the base_file if specified
-fn calculate_real_target_address(hook: &Hook) -> Result<u64, String> {
+pub fn calculate_real_target_address(hook: &Hook) -> Result<u64, String> {
     // First parse the target address as specified in the hook
     let parsed_address = parse_hex_address(&hook.target_address)?;
+    info!(
+        "Hook '{}': Parsed target address: 0x{:x}",
+        hook.name, parsed_address
+    );
 
     // If base_file is defined, the address is relative to the module's base address
     if let Some(base_file) = &hook.base_file {
@@ -344,101 +207,24 @@ fn calculate_real_target_address(hook: &Hook) -> Result<u64, String> {
     Ok(parsed_address)
 }
 
-fn get_process_name_from_proc() -> String {
+pub fn get_process_name_from_proc() -> String {
     // Read the process name from /proc/self/cmdline
     let cmdline_path = "/proc/self/cmdline";
     let cmdline = fs::read_to_string(cmdline_path).unwrap_or_else(|_| "unknown".to_string());
-    cmdline.split('\0').next().unwrap_or("unknown").to_string()
-}
-
-fn get_process_pid() -> u32 {
-    // Read the process ID from /proc/self/stat
-    let stat_path = "/proc/self/stat";
-    let stat_content = fs::read_to_string(stat_path).unwrap_or_else(|_| "0".to_string());
-    let pid_str = stat_content.split_whitespace().next().unwrap_or("0");
-    pid_str.parse::<u32>().unwrap_or(0)
+    let mut split = cmdline.split('\0');
+    let first_parameter = split.next().unwrap_or("unknown").to_string();
+    let second_parameter = split.next().unwrap_or("unknown").to_string();
+    if second_parameter.is_empty() || second_parameter == "unknown" {
+        return first_parameter;
+    }
+    return second_parameter;
 }
 
 /// Verifies memory content at the specified address matches what's expected
-unsafe fn verify_memory_content(address: u64, expected_content: &str) -> bool {
-    // Get the process name for better diagnostic information
-    let process_name = std::env::args()
-        .next()
-        .unwrap_or_else(|| "unknown".to_string());
-    let pid = get_process_pid();
-
-    // Convert the expected content string to bytes
-    info!(
-        "Process: {} (PID: {}) Verifying memory content at address 0x{:x}",
-        process_name, pid, address
-    );
-    let expected_bytes = memory_content_to_bytes(expected_content);
-
-    info!(
-        "Process: {} (PID: {}) Checking memory at address 0x{:x} for {} bytes",
-        process_name,
-        pid,
-        address,
-        expected_bytes.len()
-    );
-
-    // First check if the memory is accessible - this is critical to avoid segfaults
-    if !is_memory_accessible(address, expected_bytes.len()) {
-        warn!(
-            "Process: {} Memory at address 0x{:x} is not accessible, skipping content verification",
-            process_name, address
-        );
-        return false;
+unsafe fn verify_memory_content(map: &MemoryMap, address: u64, expected_content: &str) -> bool {
+    unsafe {
+        return wine_hooks::verify_memory_content(map, address, expected_content);
     }
-
-    // We'll be extremely cautious about memory access
-    let result = unsafe {
-        // Use a closure to contain any potential memory access issues
-        let verify_result = std::panic::catch_unwind(|| {
-            info!(
-                "Pid: {} Process: {} Reading memory at address 0x{:x}",
-                pid, process_name, address
-            );
-
-            // Read each byte individually for safer access
-            let mut actual_bytes = Vec::with_capacity(expected_bytes.len());
-            for i in 0..expected_bytes.len() {
-                let ptr = (address as *const u8).add(i);
-                let byte = ptr::read_volatile(ptr);
-                actual_bytes.push(byte);
-            }
-
-            info!("Actual bytes read: {:02X?}", actual_bytes);
-            info!("Expected bytes:    {:02X?}", expected_bytes);
-
-            actual_bytes == expected_bytes
-        });
-
-        match verify_result {
-            Ok(result) => result,
-            Err(_) => {
-                error!(
-                    "Process: {} Panic occurred during memory verification at address 0x{:x}",
-                    process_name, address
-                );
-                false
-            }
-        }
-    };
-
-    if result {
-        info!(
-            "Process: {} Memory content at 0x{:x} matches expected pattern",
-            process_name, address
-        );
-    } else {
-        info!(
-            "Process: {} Memory content at 0x{:x} does not match expected pattern",
-            process_name, address
-        );
-    }
-
-    result
 }
 
 /// Generates assembly for the hook trampoline and jumper
@@ -627,7 +413,7 @@ unsafe fn compile_and_inject_hook(hook: &Hook) -> Result<ActiveHook, String> {
     unsafe { injector::inject_hook(&injection_hook, &trampoline_info, &jumper_data) }
 }
 
-fn get_only_matching_hooks(process_name: &str) -> Vec<Hook> {
+pub fn get_only_matching_hooks(process_name: &str) -> Vec<Hook> {
     // Filter hooks based on the process name
     let hooks_config = load_hooks_config().unwrap();
     hooks_config
@@ -652,11 +438,29 @@ fn get_only_matching_hooks(process_name: &str) -> Vec<Hook> {
         .collect()
 }
 
+pub fn get_not_active_hooks() -> Vec<Hook> {
+    // Get the active hooks
+    let active_hooks = match ACTIVE_HOOKS.lock() {
+        Ok(guard) => guard,
+        Err(e) => {
+            error!("Failed to acquire active hooks lock: {}", e);
+            return vec![];
+        }
+    };
+    let proc_name = get_process_name_from_proc();
+    let matching_hooks = get_only_matching_hooks(&proc_name);
+    // Filter out the hooks that are already active
+    matching_hooks
+        .into_iter()
+        .filter(|hook| !active_hooks.contains_key(&hook.name))
+        .collect()
+}
+
 static ONCE_LOADING_LOG: Once = Once::new();
 
 /// Loads the hooks into the game
 #[unsafe(no_mangle)]
-pub extern "C" fn le_lib_load_hook() -> bool {
+pub extern "C" fn le_lib_load_hook(map: &MemoryMap) -> bool {
     // Initialize logger
     crate::initialize_logger();
 
@@ -696,14 +500,15 @@ pub extern "C" fn le_lib_load_hook() -> bool {
         // Calculate the real target address (absolute or relative to base_file)
         let target_address = match calculate_real_target_address(hook) {
             Ok(addr) => addr,
-            Err(e) => {
-                error!("Invalid target address for hook '{}': {}", hook.name, e);
+            Err(_e) => {
+                //error!("Invalid target address for hook '{}': {}", hook.name, e);
                 continue;
             }
         };
 
         // Verify memory content
-        let memory_matches = unsafe { verify_memory_content(target_address, &hook.memory_content) };
+        let memory_matches =
+            unsafe { verify_memory_content(&map, target_address, &hook.memory_content) };
         if !memory_matches {
             error!("Memory content doesn't match for hook '{}'", hook.name);
             continue;
@@ -809,6 +614,7 @@ pub extern "C" fn le_lib_unload_hook() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::system_tools::MEMORY_MAP;
     use std::fs;
     use std::io::Write;
     use std::path::Path;
@@ -904,14 +710,18 @@ hooks:
         println!("Actual bytes read from memory: {:02X?}", actual_bytes);
 
         // Test verification with matching content
-        let result = unsafe { verify_memory_content(test_address, expected_hex) };
+        MemoryMap::scan();
+
+        let map = MEMORY_MAP.read().unwrap();
+        let result = unsafe { verify_memory_content(&map, test_address, expected_hex) };
         assert!(
             result,
             "Memory content verification failed for matching content"
         );
 
         // Test verification with non-matching content
-        let result = unsafe { verify_memory_content(test_address, "\\xFF\\xFF\\xFF\\xFF\\xFF") };
+        let result =
+            unsafe { verify_memory_content(&map, test_address, "\\xFF\\xFF\\xFF\\xFF\\xFF") };
         assert!(
             !result,
             "Memory content verification incorrectly succeeded for non-matching content"

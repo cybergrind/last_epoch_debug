@@ -1,4 +1,5 @@
 use log::{LevelFilter, info};
+use low_level_tools::hook_tools;
 use std::sync::Once;
 
 pub use hooks::ability_hook;
@@ -25,7 +26,12 @@ static INIT: Once = Once::new();
 
 pub fn initialize_logger() {
     let current_pid = std::process::id();
+    let current_proc_name = hook_tools::get_process_name_from_proc();
     let log_pattern_with_pid = format!("[PID: {}] {}", current_pid, constants::LOG_PATTERN);
+    let level = match current_proc_name.ends_with(constants::GAME_NAME) {
+        true => LevelFilter::Debug, // Adjust log level for the game executable
+        _ => LevelFilter::Warn,     // Default log level for other executables
+    };
     INIT.call_once(|| {
         let config = log4rs::append::file::FileAppender::builder()
             .encoder(Box::new(log4rs::encode::pattern::PatternEncoder::new(
@@ -39,12 +45,15 @@ pub fn initialize_logger() {
             .build(
                 log4rs::config::Root::builder()
                     .appender("file")
-                    .build(LevelFilter::Info),
+                    .build(level),
             )
             .unwrap();
 
         log4rs::init_config(config).expect("Failed to initialize logger");
-        info!("le_lib logger initialized");
+        info!(
+            "le_lib logger initialized for process: {}",
+            current_proc_name
+        );
     });
 }
 

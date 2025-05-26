@@ -1,9 +1,8 @@
-use log::{error, info, warn};
+use log::{info, warn};
 use std::ptr;
 
 use crate::low_level_tools::hook_tools::{
-    ActiveHook, Hook, get_function_address, get_memory_permissions, is_memory_accessible,
-    is_wine_process, parse_hex_address,
+    ActiveHook, Hook, get_function_address, parse_hex_address,
 };
 
 use super::hook_tools::memory_content_to_bytes;
@@ -242,117 +241,13 @@ unsafe fn copy_to_executable_memory(address: u64, data: &[u8]) -> Result<(), Str
 /// Reads memory from a specified address
 unsafe fn read_memory(address: u64, size: usize) -> Result<Vec<u8>, String> {
     // Check if we're running in a Wine process
-    if is_wine_process() {
-        // Use special Wine-safe memory reading method that bypasses protection mechanisms
-        return crate::wine_memory::safe_read_memory(address, size);
-    }
-
-    unsafe {
-        // Standard Linux memory access for non-Wine processes
-        // Check if memory is accessible - using our safer implementation
-        if !is_memory_accessible(address, size) {
-            return Err(format!(
-                "Memory at address 0x{:x} is not accessible",
-                address
-            ));
-        }
-
-        // Read the memory
-        let ptr = address as *const u8;
-        let mut buffer = Vec::with_capacity(size);
-
-        // Use std::panic::AssertUnwindSafe to make &mut Vec<u8> work with catch_unwind
-        let read_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            for i in 0..size {
-                buffer.push(ptr::read_volatile(ptr.add(i)));
-            }
-            buffer
-        }));
-
-        match read_result {
-            Ok(result) => Ok(result),
-            Err(_) => Err(format!(
-                "Failed to safely read memory at address 0x{:x}",
-                address
-            )),
-        }
-    }
+    return crate::wine_memory::safe_read_memory(address, size);
 }
 
 /// Writes data to a memory address, handling memory protection changes
 unsafe fn write_memory(address: u64, data: &[u8]) -> Result<(), String> {
     // Check if we're running in a Wine process
-    if is_wine_process() {
-        // Use special Wine-safe memory writing method that bypasses protection mechanisms
-        return crate::wine_memory::safe_write_memory(address, data);
-    }
-
-    unsafe {
-        // Calculate page boundaries
-        let page_size = libc::sysconf(libc::_SC_PAGESIZE) as usize;
-        let page_mask = !(page_size - 1);
-        let page_start = (address & page_mask as u64) as *mut libc::c_void;
-        let page_end = (((address + data.len() as u64 - 1) & page_mask as u64) + page_size as u64)
-            as *mut libc::c_void;
-        let region_size = (page_end as usize) - (page_start as usize);
-
-        // Get the current memory permissions before changing them
-        if let Some(perms) = get_memory_permissions(address) {
-            info!("Current memory permissions at 0x{:x}: {}", address, perms);
-        }
-
-        // Make the memory writable and executable
-        info!(
-            "Setting memory protection RWX for region 0x{:x} - 0x{:x}",
-            page_start as u64, page_end as u64
-        );
-
-        let result = libc::mprotect(
-            page_start,
-            region_size,
-            libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
-        );
-
-        if result != 0 {
-            let error = std::io::Error::last_os_error();
-            error!("Failed to change memory protection: {}", error);
-            return Err(format!(
-                "Failed to change memory protection at 0x{:x}: {}",
-                address, error
-            ));
-        }
-
-        info!("Memory protection changed successfully, attempting to write data");
-
-        // Write the data - wrap in a catch_unwind to handle any segfaults
-        let write_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let ptr = address as *mut u8;
-            for (i, &byte) in data.iter().enumerate() {
-                ptr::write_volatile(ptr.add(i), byte);
-            }
-        }));
-
-        if write_result.is_err() {
-            return Err(format!(
-                "Failed to safely write memory at address 0x{:x}",
-                address
-            ));
-        }
-
-        // Memory barriers to ensure changes are visible
-        std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
-
-        // Flush instruction cache by executing an empty inline assembly block
-        std::arch::asm!("", options(nomem, nostack));
-
-        info!(
-            "Successfully wrote {} bytes to memory at 0x{:x}",
-            data.len(),
-            address
-        );
-
-        Ok(())
-    }
+    return crate::wine_memory::safe_write_memory(address, data);
 }
 
 /// Restores original bytes at a hook location to undo a hook

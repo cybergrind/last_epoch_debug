@@ -2,4 +2,4 @@
 
 pub mod maps;
 
-pub use maps::MEMORY_MAP;
+pub use maps::{MEMORY_MAP, MemoryMap};

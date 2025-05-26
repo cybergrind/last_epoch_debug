@@ -38,7 +38,7 @@
 use log::{debug, error, warn};
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 // Define Address as u64 to match the expected return type
 type Address = u64;
@@ -104,7 +104,7 @@ impl MemoryMapEntry {
     }
 
     pub fn is_memory_accessible(&self) -> bool {
-        self.perms.contains('r') || self.perms.contains('w') || self.perms.contains('x')
+        return true;
     }
 
     // Add getter methods for private fields
@@ -175,7 +175,23 @@ impl MemoryMap {
     }
 
     pub fn get_entry(&self, address: Address) -> Option<&MemoryMapEntry> {
-        self.entries.get(&(address as usize))
+        self.entries
+            .values()
+            .find(|entry| entry.address <= address && address < entry.address + entry.size as u64)
+    }
+
+    pub fn is_memory_accessible(&self, address: Address, _len: usize) -> bool {
+        if let Some(entry) = self.get_entry(address) {
+            return entry.is_memory_accessible();
+        }
+        false
+    }
+
+    pub fn is_memory_mapped(&self, address: Address) -> bool {
+        // Check if the address is in any of the memory map entries
+        self.entries
+            .values()
+            .any(|entry| entry.address <= address && address < entry.address + entry.size as u64)
     }
 
     pub fn get_entry_by_name(&self, name: &str) -> Option<&MemoryMapEntry> {
@@ -192,12 +208,22 @@ impl MemoryMap {
 
 // Use Mutex<MemoryMap> for thread-safe interior mutability
 lazy_static::lazy_static! {
-    pub static ref MEMORY_MAP: Mutex<MemoryMap> = Mutex::new(MemoryMap::new());
+    pub static ref MEMORY_MAP: RwLock<MemoryMap> = RwLock::new(MemoryMap::new());
 }
 
 // A safer way to obtain the mutex guard that doesn't panic
-fn get_memory_map_guard() -> Option<MutexGuard<'static, MemoryMap>> {
-    match MEMORY_MAP.try_lock() {
+pub fn get_memory_map() -> RwLockWriteGuard<'static, MemoryMap> {
+    match MEMORY_MAP.try_write() {
+        Ok(guard) => guard,
+        Err(e) => {
+            error!("Failed to lock memory map: {}", e);
+            panic!("Memory map mutex is poisoned");
+        }
+    }
+}
+
+pub fn get_memory_map_guard() -> Option<RwLockReadGuard<'static, MemoryMap>> {
+    match MEMORY_MAP.try_read() {
         Ok(guard) => Some(guard),
         Err(std::sync::TryLockError::WouldBlock) => {
             debug!("Memory map mutex is already locked by another thread");
@@ -218,18 +244,7 @@ impl MemoryMap {
     pub fn scan() -> Vec<MemoryMapEntry> {
         // Try to lock the global memory map for the duration of the scan
         // Handle initialization case and mutex poisoning gracefully
-        match get_memory_map_guard() {
-            Some(mut guard) => {
-                // Use the internal scan method
-                guard.scan_internal()
-            }
-            None => {
-                // Another thread is holding the lock or there was an issue
-                // Fall back to a direct scan that doesn't use the global state
-                debug!("Using direct scan as fallback");
-                MemoryMap::scan_direct()
-            }
-        }
+        get_memory_map().scan_internal()
     }
 
     /// Function for direct scanning without using the global mutex
@@ -237,6 +252,7 @@ impl MemoryMap {
     /// the global state might not be fully set up
     pub fn scan_direct() -> Vec<MemoryMapEntry> {
         // Use a try_catch block to handle any panics that might occur
+        debug!("Scanning memory maps directly without global lock");
         let result = std::panic::catch_unwind(|| {
             let mut local_map = MemoryMap::new();
             local_map.scan_internal()
@@ -375,7 +391,11 @@ mod tests {
     #[test]
     fn test_global_map() {
         // Test the global memory map
-        match MEMORY_MAP.lock() {
+        {
+            let mut mm = MEMORY_MAP.write().unwrap();
+            mm.entries.clear(); // Clear the global map for testing
+        }
+        match MEMORY_MAP.read() {
             Ok(map) => {
                 assert_eq!(map.len(), 0, "Global memory map should be empty initially");
             }
@@ -388,7 +408,7 @@ mod tests {
         let new_entries = MemoryMap::scan();
         assert!(new_entries.len() > 0, "Scan should return new entries");
 
-        match MEMORY_MAP.lock() {
+        match MEMORY_MAP.read() {
             Ok(map) => {
                 assert_ne!(
                     map.len(),
@@ -428,7 +448,7 @@ mod tests {
             entry.pathname == file_path.to_str().unwrap(),
             "Entry should match the mmaped file"
         );
-        match MEMORY_MAP.lock() {
+        match MEMORY_MAP.read() {
             Ok(map) => {
                 let only_name = file_path.file_name().unwrap().to_str().unwrap();
                 assert_eq!(

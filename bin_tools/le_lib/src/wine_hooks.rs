@@ -1,14 +1,11 @@
-use crate::lib_init::HOOK_MMAP_CALL;
 use crate::lib_init::notify_dll_loaded;
-use crate::low_level_tools::hook_tools::{
-    Hook, is_memory_accessible, le_lib_load_hook, load_hooks_config, memory_content_to_bytes,
-    parse_hex_address,
-};
-use crate::system_tools::maps; // Import memory map module without MEMORY_MAP
+use crate::low_level_tools::hook_tools::{self, Hook, le_lib_load_hook, memory_content_to_bytes};
+use crate::system_tools::maps;
+use crate::system_tools::maps::{MemoryMap, get_memory_map_guard};
 use lazy_static::lazy_static;
 use log::{debug, error, info, warn};
 use std::collections::HashSet;
-use std::os::raw::{c_char, c_int, c_long, c_void};
+use std::os::raw::{c_int, c_long, c_void};
 use std::path::Path;
 use std::sync::{Mutex, Once};
 use std::time::{Duration, Instant};
@@ -23,14 +20,11 @@ type MmapFunc = unsafe extern "C" fn(
     offset: c_long,
 ) -> *mut c_void;
 
-// Define mmap constants
-const PROT_READ: c_int = 0x1;
-const PROT_EXEC: c_int = 0x4;
-
 // Store original function pointers
 lazy_static! {
     static ref ORIGINAL_MMAP: Mutex<Option<MmapFunc>> = Mutex::new(None);
     static ref HOOK_INITIALIZED: Once = Once::new();
+    static ref NO_PENDING: Once = Once::new();
     static ref LAST_SCAN_TIME: Mutex<Instant> = Mutex::new(Instant::now());
     static ref KNOWN_MODULES: Mutex<HashSet<String>> = Mutex::new(HashSet::new());
     static ref CALLS_COUNTER: Mutex<u64> = Mutex::new(0);
@@ -39,52 +33,7 @@ lazy_static! {
 }
 
 // Interval between memory map scans (in milliseconds)
-const SCAN_INTERVAL_MS: u64 = 15000;
-
-// Hook for mmap syscall
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mmap(
-    addr: *mut c_void,
-    length: usize,
-    prot: c_int,
-    flags: c_int,
-    fd: c_int,
-    offset: c_long,
-) -> *mut c_void {
-    // Call the original mmap function
-    let guard = ORIGINAL_MMAP.lock().unwrap();
-    let result = match *guard {
-        Some(original_fn) => unsafe { original_fn(addr, length, prot, flags, fd, offset) },
-        None => {
-            error!("Original mmap function not found");
-            return std::ptr::null_mut();
-        }
-    };
-
-    // If HOOK_MMAP_CALL is disabled, just return the result without processing
-    if !*HOOK_MMAP_CALL.lock().unwrap() {
-        return result;
-    }
-
-    // Increment the call counter
-    *CALLS_COUNTER.lock().unwrap() += 1;
-
-    // If memory was mapped with executable permission, scan for new modules
-    if !result.is_null() && (prot & PROT_EXEC) != 0 && (prot & PROT_READ) != 0 {
-        debug!("Executable memory mapped - checking for new modules");
-
-        // Rate limit scanning to avoid excessive I/O
-        let mut last_scan_time = LAST_SCAN_TIME.lock().unwrap();
-        let now = Instant::now();
-        if now.duration_since(*last_scan_time) > Duration::from_millis(SCAN_INTERVAL_MS) {
-            *last_scan_time = now;
-            // Scan in a separate thread to avoid blocking the main thread
-            std::thread::spawn(scan_proc_maps);
-        }
-    }
-
-    result
-}
+const SCAN_INTERVAL_MS: u64 = 5000;
 
 // Scan for new loaded modules using system_tools::maps
 fn scan_proc_maps() {
@@ -102,6 +51,14 @@ fn scan_proc_maps() {
 
         process_module(path, entry.get_address(), &mut known_modules);
     }
+    let map = match get_memory_map_guard() {
+        Some(guard) => guard,
+        None => {
+            warn!("Failed to get memory map guard during scan");
+            return;
+        }
+    };
+    le_lib_load_hook(&map);
 }
 
 // Function to scan loaded modules at startup - uses direct scan to avoid initialization issues
@@ -110,7 +67,9 @@ fn scan_loaded_modules() {
 
     // Use direct scanning during initialization to avoid potential mutex issues
     let new_entries = maps::MemoryMap::scan_direct();
+    debug!("Found {} new entries in memory map", new_entries.len());
     let mut known_modules = KNOWN_MODULES.lock().unwrap();
+    debug!("Known modules before scan: {}", known_modules.len());
 
     // Process each memory map entry
     for entry in new_entries {
@@ -130,6 +89,7 @@ fn process_module(path: &str, address: u64, known_modules: &mut HashSet<String>)
     if !is_target_module(path) || known_modules.contains(path) {
         return;
     }
+    info!("Processing module: {}", path);
 
     // Add to known modules
     known_modules.insert(path.to_string());
@@ -161,6 +121,9 @@ fn check_pending_hooks_for_file(loaded_file_path: &str) {
 
     // Exit early if there are no pending hooks
     if pending_hooks.is_empty() {
+        NO_PENDING.call_once(|| {
+            info!("No pending hooks waiting for files, skipping check");
+        });
         return;
     }
 
@@ -169,63 +132,78 @@ fn check_pending_hooks_for_file(loaded_file_path: &str) {
         .iter()
         .enumerate()
         .filter_map(|(index, hook)| {
-            if let Some(wait_file) = &hook.wait_for_file {
+            if let Some(wait_file) = &hook.base_file {
                 // Check if the loaded file matches what we're waiting for
                 // Use both exact path and basename comparison for flexibility
-                if loaded_file_path == wait_file
-                    || loaded_file_path.ends_with(
-                        Path::new(wait_file)
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_str()
-                            .unwrap_or_default(),
-                    )
-                {
+                if loaded_file_path == wait_file || loaded_file_path.ends_with(wait_file) {
+                    info!(
+                        "Hook '{}' is ready to be applied, waiting file '{}' has been loaded",
+                        hook.name, wait_file
+                    );
                     Some(index)
                 } else {
+                    info!(
+                        "Hook '{}' is still waiting for file '{}', loaded file is '{}'",
+                        hook.name, wait_file, loaded_file_path
+                    );
                     None
                 }
             } else {
+                info!("Hook '{}' does not wait for a specific file", hook.name);
                 None
             }
         })
         .collect();
 
     // Process hooks that are ready (in reverse order to safely remove them)
+
+    let map = match get_memory_map_guard() {
+        Some(guard) => guard,
+        None => {
+            warn!("Failed to get memory map guard during scan");
+            return;
+        }
+    };
+
     for &index in ready_hooks.iter().rev() {
         if index < pending_hooks.len() {
             // Safety check
             let hook = pending_hooks.remove(index);
             info!(
                 "Required file {} loaded for hook '{}', attempting to apply hook",
-                hook.wait_for_file
-                    .as_ref()
-                    .unwrap_or(&"unknown".to_string()),
+                hook.base_file.as_ref().unwrap_or(&"unknown".to_string()),
                 hook.name
             );
 
             // Attempt to apply the hook
-            attempt_apply_hook(&hook);
+            attempt_apply_hook(&hook, &map);
         }
     }
 }
 
 // Attempt to apply a hook once its required file is loaded
-fn attempt_apply_hook(hook: &Hook) {
-    // Parse the target address
-    let target_address = match parse_hex_address(&hook.target_address) {
+fn attempt_apply_hook(hook: &Hook, map: &MemoryMap) {
+    // Verify memory content
+    info!(
+        "Attempting to apply hook '{}', verifying memory content",
+        hook.name
+    );
+    let real_target_address = match hook_tools::calculate_real_target_address(hook) {
         Ok(addr) => addr,
         Err(_) => {
             error!(
-                "Invalid target address for hook '{}': {}",
-                hook.name, hook.target_address
+                "Failed to calculate real target address for hook '{}'",
+                hook.name
             );
             return;
         }
     };
-
-    // Verify memory content
-    let memory_matches = unsafe { verify_memory_content(target_address, &hook.memory_content) };
+    info!(
+        "Calculated real target address for hook '{}' is 0x{:x}",
+        hook.name, real_target_address
+    );
+    let memory_matches =
+        unsafe { verify_memory_content(&map, real_target_address, &hook.memory_content) };
     if !memory_matches {
         error!(
             "Memory content doesn't match for hook '{}' at address {}. Target file loaded but memory content is different.",
@@ -240,12 +218,10 @@ fn attempt_apply_hook(hook: &Hook) {
         "Memory content verified for hook '{}', calling le_lib_load_hook to apply hook",
         hook.name
     );
-    le_lib_load_hook();
+    le_lib_load_hook(&map);
 }
 
-// Helper function to verify memory content at a specific address
-unsafe fn verify_memory_content(address: u64, expected_content: &str) -> bool {
-    // Convert the expected content string to bytes
+pub unsafe fn verify_memory_content(map: &MemoryMap, address: u64, expected_content: &str) -> bool {
     info!("Verifying memory content at address 0x{:x}", address);
     let expected_bytes = memory_content_to_bytes(expected_content);
 
@@ -256,7 +232,7 @@ unsafe fn verify_memory_content(address: u64, expected_content: &str) -> bool {
     );
 
     // First check if the memory is accessible - this is critical to avoid segfaults
-    if !is_memory_accessible(address, expected_bytes.len()) {
+    if !map.is_memory_accessible(address, expected_bytes.len()) {
         warn!(
             "Memory at address 0x{:x} is not accessible, skipping content verification",
             address
@@ -301,130 +277,42 @@ unsafe fn verify_memory_content(address: u64, expected_content: &str) -> bool {
     result
 }
 
-// Function to find and hook the mmap syscall
-fn hook_mmap_syscall() -> bool {
-    // On Linux, we'll use libcall to hook the mmap system call
-    // This is a simplified placeholder - in a real implementation,
-    // you would need a library like `frida-gum` or similar to hook syscalls
-
-    unsafe {
-        // Get the original mmap function from libc
-        let func_ptr = libc::dlsym(libc::RTLD_NEXT, "mmap\0".as_ptr() as *const c_char);
-
-        if func_ptr.is_null() {
-            error!("Failed to find original mmap function");
-            false
-        } else {
-            let original_mmap: MmapFunc = std::mem::transmute(func_ptr);
-            info!("Found original mmap at {:p}", func_ptr);
-            *ORIGINAL_MMAP.lock().unwrap() = Some(original_mmap);
-            true
-        }
-    }
-}
-
 // Initialize the hooks
 pub fn initialize_wine_hooks() -> bool {
-    use std::env;
+    log::info!("Initializing Wine Hooks");
     use std::panic::{self, AssertUnwindSafe};
 
-    // Check environment variable for HOOK_MMAP_CALL setting
-    let hook_mmap = env::var("HOOK_MMAP_CALL")
-        .map(|v| v == "1" || v.to_lowercase() == "true")
-        .unwrap_or(false);
-
     // Store the setting in our global variable
-    match HOOK_MMAP_CALL.lock() {
-        Ok(mut guard) => {
-            *guard = hook_mmap;
-        }
-        Err(e) => {
-            // This is unlikely to happen, but handle it gracefully
-            warn!("Failed to set HOOK_MMAP_CALL: {}", e);
-        }
-    }
-
     // Load hooks configuration and store hooks with wait_for_file
     // Wrap in a catch_unwind to prevent initialization failures from bringing down the whole process
     if let Err(e) = panic::catch_unwind(AssertUnwindSafe(|| {
-        if let Ok(config) = load_hooks_config() {
-            let mut pending_hooks = match PENDING_HOOKS.lock() {
-                Ok(guard) => guard,
-                Err(e) => {
-                    warn!("Failed to lock PENDING_HOOKS: {}", e);
-                    return;
-                }
-            };
-
-            for hook in config.hooks {
-                if let Some(wait_file) = &hook.wait_for_file {
-                    info!(
-                        "Registered hook '{}' waiting for file: {}",
-                        hook.name, wait_file
-                    );
+        let matching_hooks = hook_tools::get_not_active_hooks();
+        let mut pending_hooks = match PENDING_HOOKS.lock() {
+            Ok(guard) => guard,
+            Err(e) => {
+                warn!("Failed to lock PENDING_HOOKS: {}", e);
+                return;
+            }
+        };
+        for hook in matching_hooks {
+            match hook.base_file {
+                Some(ref file) => {
+                    info!("Hook '{}' is waiting for file '{}'", hook.name, file);
                     pending_hooks.push(hook);
                 }
+                None => info!("Hook '{}' does not wait for a specific file", hook.name),
             }
-
-            if !pending_hooks.is_empty() {
-                info!(
-                    "Loaded {} pending hooks that are waiting for files",
-                    pending_hooks.len()
-                );
-            }
-        } else {
-            warn!("Could not load hooks configuration during wine_hooks initialization");
         }
     })) {
         // If there was a panic in the hook loading code, log it but continue
         warn!("Panic during hook configuration loading: {:?}", e);
     }
 
-    info!("Initializing mmap syscall hook.");
-    let mut success = false;
-
-    // Wrap the initialization in a catch_unwind to prevent panics
-    if let Err(e) = panic::catch_unwind(AssertUnwindSafe(|| {
-        HOOK_INITIALIZED.call_once(|| {
-            // Hook the mmap syscall - safe even if it fails
-            match hook_mmap_syscall() {
-                true => {
-                    info!("Linux memory mapping hooks initialized successfully");
-                    if hook_mmap {
-                        info!("HOOK_MMAP_CALL is enabled. Scanning for loaded modules.");
-                        // This calls our safer scan_loaded_modules
-                        if let Err(e) = panic::catch_unwind(AssertUnwindSafe(|| {
-                            scan_loaded_modules();
-                        })) {
-                            warn!("Panic occurred during initial module scanning: {:?}", e);
-                        }
-                    }
-                    success = true;
-                }
-                false => {
-                    error!("Failed to initialize Linux memory mapping hooks");
-                }
-            }
-        });
-    })) {
-        warn!("Panic occurred during hook initialization: {:?}", e);
+    if let Err(e) = panic::catch_unwind(AssertUnwindSafe(|| start_module_scanner())) {
+        warn!("Panic during module scanner initialization: {:?}", e);
         return false;
     }
-
-    if !hook_mmap && success {
-        info!("HOOK_MMAP_CALL is disabled (default). Starting periodic module scanner.");
-        // Start module scanner in a separate thread to avoid blocking
-        if let Err(e) = panic::catch_unwind(AssertUnwindSafe(|| {
-            start_module_scanner();
-        })) {
-            warn!("Failed to start module scanner: {:?}", e);
-            success = false;
-        }
-    } else if hook_mmap {
-        info!("HOOK_MMAP_CALL is enabled. No periodic scanner started.");
-    }
-
-    success
+    return true;
 }
 
 // Start a background thread to periodically scan for loaded modules
@@ -446,7 +334,6 @@ fn start_module_scanner() {
             // Scan for new modules
             debug!("Periodic scan for loaded modules");
             scan_proc_maps();
-            le_lib_load_hook();
         }
     });
 

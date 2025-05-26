@@ -10,7 +10,6 @@ use std::sync::{Mutex, Once};
 
 // local imports
 use crate::initialize_logger;
-use crate::le_lib_echo;
 use crate::low_level_tools::hook_tools::load_hooks_config;
 use crate::wine_hooks::initialize_wine_hooks;
 
@@ -30,7 +29,6 @@ lazy_static! {
     // Static to store the DLL notification callback
     static ref DLL_NOTIFICATION_CALLBACK: Mutex<Option<DllNotificationCallback>> = Mutex::new(None);
     // Flag to indicate if we should hook mmap calls (default: false)
-    pub static ref HOOK_MMAP_CALL: Mutex<bool> = Mutex::new(false);
 }
 
 // Static to ensure we only initialize once
@@ -93,10 +91,7 @@ unsafe extern "C" fn dll_loaded_callback(dll_path: *const c_char, _base_address:
 /// Perfect for LD_PRELOAD usage as it ensures our initialization happens before any other code runs
 #[unsafe(no_mangle)]
 #[used]
-#[cfg_attr(
-    any(target_os = "linux", target_os = "android"),
-    unsafe(link_section = ".init_array")
-)]
+#[cfg_attr(any(target_os = "linux"), unsafe(link_section = ".init_array"))]
 pub static __LE_LIB_CONSTRUCTOR: extern "C" fn() = {
     extern "C" fn constructor() {
         // We must initialize logger directly here because the info! call needs it
@@ -124,14 +119,6 @@ pub extern "C" fn le_lib_init() -> bool {
         set_override(true);
         initialize_logger();
         info!("le_lib_init: Library initialization started");
-
-        // register hook `le_lib_echo`
-        if !register_hook("le_lib_echo", le_lib_echo as HookFunctionPtr) {
-            error!("le_lib_init: Failed to register le_lib_echo hook");
-            success = false;
-        } else {
-            info!("le_lib_init: le_lib_echo hook registered successfully");
-        }
 
         // Read hooks configuration
         match load_hooks_config() {
@@ -163,10 +150,11 @@ pub extern "C" fn le_lib_init() -> bool {
 
         match initialize_wine_hooks() {
             true => {
-                info!("le_lib_init: Wine DLL loading hooks initialized successfully");
+                info!("le_lib_init: wine hooks initialized successfully");
+                success = true;
             }
             false => {
-                error!("le_lib_init: Failed to initialize Wine DLL loading hooks");
+                error!("le_lib_init: Failed to initialize wine hooks");
 
                 // Check if we should continue despite failure
                 if env::var("LE_CONTINUE_ON_HOOK_FAILURE")

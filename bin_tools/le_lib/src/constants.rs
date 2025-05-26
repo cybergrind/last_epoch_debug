@@ -12,3 +12,4 @@ pub fn get_hooks_config_path() -> String {
     std::env::var("HOOKS_CONFIG_PATH").unwrap_or_else(|_| DEFAULT_HOOKS_CONFIG_PATH.to_string())
 }
 pub const GAME_DLL: &str = "GameAssembly.dll";
+pub const GAME_NAME: &str = "Last Epoch.exe";
