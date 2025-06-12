@@ -104,6 +104,16 @@ sudo setcap cap_net_raw+ep $PING_PATH
 fix_mount() {
     src=$1
     dst=$2
+    # check if already mounted to prevent recursive mounts
+    if mountpoint -q "$dst"; then
+        echo "Mount point $dst is already mounted, skipping..."
+        return
+    fi
+    if [ -d "$dst" ]; then
+        echo "Mount point $dst already exists as a directory, skipping..."
+        return
+    fi
+    echo "Mounting $src to $dst..."
     sudo mkdir -p "$dst" 2>/dev/null || true
     # Unmount first if already mounted
     sudo umount "$dst" 2>/dev/null || true
@@ -117,7 +127,6 @@ echo "nameserver 192.168.88.1" | sudo tee /etc/netns/novpn/resolv.conf
 # Set up PulseAudio and D-Bus access
 # Create required directories in the namespace
 XDG_RUNTIME_DIR="$HOST_XDG_RUNTIME_DIR"
-sudo mkdir -p /run/netns/novpn
 sudo ip netns exec novpn mkdir -p "$XDG_RUNTIME_DIR" 2>/dev/null || true
 sudo ip netns exec novpn mkdir -p "$XDG_RUNTIME_DIR/pulse" 2>/dev/null || true
 sudo ip netns exec novpn mkdir -p "$XDG_RUNTIME_DIR/bus" 2>/dev/null || true
@@ -148,6 +157,19 @@ if [ -n "$WAYLAND_DISPLAY" ] && [ -e "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ]; then
     sudo ip netns exec novpn chmod 777 "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" 2>/dev/null || true
 fi
 
+fix_mount "/tmp/" "$NS_PATH/tmp"
+fix_mount "/var/" "$NS_PATH/var"
+fix_mount "/dev/" "$NS_PATH/dev"
+fix_mount "/etc/" "$NS_PATH/etc"
+fix_mount "/sys/" "$NS_PATH/sys"
+
+
+# Mount udev control socket and database
+fix_mount "/run/" "$NS_PATH/run"
+fix_mount "/lib/udev" "$NS_PATH/lib/udev"
+
+
+
 # Set up X11 socket access (as fallback)
 if [ -e "/tmp/.X11-unix" ]; then
     echo "Setting up X11 socket access..."
@@ -165,6 +187,23 @@ fi
 if [ -n "$SLEEP_PID" ]; then
     sudo kill $SLEEP_PID 2>/dev/null || true
 fi
+
+# Add this simple device monitor:
+
+# Monitor /dev for new devices and trigger Steam refresh
+echo "Setting up /dev monitor for device changes..."
+(
+    while inotifywait -e create,delete /dev > /dev/null 2>&1; do
+        echo "Device change detected in /dev"
+        # Trigger udev rescan in namespace
+        sudo ip netns exec novpn udevadm trigger --action=add --subsystem-match=input --subsystem-match=hidraw > /dev/null 2>&1 &
+    done
+) &
+DEV_MONITOR_PID=$!
+
+trap "sudo kill $DEV_MONITOR_PID 2>/dev/null || true; sudo pkill -f 'socat.*:8765' 2>/dev/null || true" EXIT
+
+echo "✅ Device monitor started (PID: $DEV_MONITOR_PID)"
 
 # Verify connectivity
 echo "Testing connectivity from namespace..."
