@@ -56,6 +56,15 @@ pub extern "C" fn le_lib_health_hook(registers_ptr: u64) {
         // dead player
         return;
     }
+    if player_health.max_health < 0.0 || player_health.max_health > 10000.0 {
+        // invalid max health, skip
+        return;
+    }
+    if player_health.health < 0.0 || player_health.health > 10000.0 {
+        // invalid health, skip
+        return;
+    }
+
     if player_health.health / player_health.max_health < LOW_HEALTH_THRESHOLD {
         info!(
             "!!![LOW] PlayerHealth: {}/{}",
