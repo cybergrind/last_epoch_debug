@@ -45,6 +45,31 @@ addr.nl_pid = 0; // Kernel assigns PID
 addr.nl_groups = 1; // Subscribe to multicast group 1
 ```
 
+### Epoll-Based Event Monitoring
+The implementation uses Linux epoll for efficient event-driven socket monitoring:
+
+```rust
+// Create epoll instance
+let epoll_fd = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
+
+// Add socket to epoll interest list for read events
+let mut epoll_event = libc::epoll_event {
+    events: libc::EPOLLIN as u32,
+    u64: socket_fd as u64,
+};
+
+// Wait for events with timeout
+let ready_count = unsafe {
+    libc::epoll_wait(epoll_fd, events.as_mut_ptr(), events.len() as i32, 100)
+};
+```
+
+**Benefits over polling approach:**
+- **Zero CPU usage** when no events are available
+- **Immediate notification** when data becomes available  
+- **Scalable** to multiple file descriptors if needed
+- **Timeout support** for responsive shutdown handling
+
 ### Message Format
 UDev events are transmitted as netlink messages containing:
 - **Netlink Header**: Standard netlink message header
@@ -53,10 +78,13 @@ UDev events are transmitted as netlink messages containing:
 
 ### Event Processing
 The forwarder processes events by:
-1. Receiving raw bytes from netlink socket
-2. Extracting payload from netlink message header
-3. Parsing null-terminated string fields
-4. Displaying structured information including:
+1. Creating an epoll instance for efficient socket monitoring
+2. Adding the netlink socket to epoll interest list
+3. Using `epoll_wait()` with timeout to wait for socket readiness
+4. Reading available data when socket is ready
+5. Extracting payload from netlink message header
+6. Parsing null-terminated string fields
+7. Displaying structured information including:
    - Action (add, remove, change, etc.)
    - Device path
    - Subsystem
@@ -132,14 +160,17 @@ Summary: add action on /devices/virtual/block/loop0 [block] (/dev/loop0)
 
 ### Architecture Decisions
 - **Raw sockets** instead of high-level libraries for maximum control
-- **Non-blocking sockets** with polling for responsive signal handling  
+- **Non-blocking sockets** with epoll for responsive and efficient event handling
+- **Epoll-based monitoring** eliminates busy waiting and reduces CPU usage
 - **Separate blocking task** for socket operations to avoid blocking async runtime
 - **Detailed event parsing** for comprehensive debugging information
 
 ### Performance Considerations
 - Large socket buffer (1MB) prevents event loss during bursts
 - Efficient string parsing without unnecessary allocations
-- Non-blocking operations prevent main loop stalling
+- **Epoll-based event monitoring** eliminates CPU waste from polling
+- **Event-driven architecture** provides immediate response to socket events
+- **100ms timeout** in epoll_wait allows responsive shutdown signal handling
 
 ### Future Enhancements
 - Event filtering by subsystem or device type
