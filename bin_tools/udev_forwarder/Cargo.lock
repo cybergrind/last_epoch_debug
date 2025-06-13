@@ -454,6 +454,7 @@ dependencies = [
  "env_logger",
  "libc",
  "log",
+ "serde",
  "tokio",
 ]
 

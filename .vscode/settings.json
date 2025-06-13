@@ -23,5 +23,6 @@
     "terminal.integrated.defaultProfile.linux": "bash",
     "rust-analyzer.linkedProjects": [
         "./bin_tools/le_lib/Cargo.toml",
+        "./bin_tools/udev_forwarder/Cargo.toml"
     ]
 }
