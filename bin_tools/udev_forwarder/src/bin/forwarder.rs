@@ -1,25 +1,32 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
+use clap::Parser;
 use log::{error, info, warn};
-use std::{mem, process, ptr, time::Duration, sync::Arc, collections::HashMap};
-use tokio::{signal, sync::{self, Mutex}, time::timeout, net::{UnixListener, UnixStream}, io::AsyncWriteExt};
-use udev_forwarder::shared::{UNIX_SOCKET_PATH, pack_message};
+use std::{collections::HashMap, mem, process, ptr, sync::Arc, time::Duration};
+use tokio::{
+    io::AsyncWriteExt,
+    net::{UnixListener, UnixStream},
+    signal,
+    sync::{self, Mutex},
+    time::timeout,
+};
+use udev_forwarder::shared::{
+    pack_message, NetlinkMsgHeader, NETLINK_KOBJECT_UEVENT, UNIX_SOCKET_PATH,
+};
 
-const NETLINK_KOBJECT_UEVENT: i32 = 15;
 const SOCKET_BUFFER_SIZE: i32 = 1024 * 1024;
 const EVENT_BUFFER_SIZE: usize = 8192;
 const EPOLL_TIMEOUT_MS: i32 = 100;
 const SHUTDOWN_TIMEOUT_SECS: u64 = 2;
 
-#[repr(C)]
-struct NetlinkMsgHeader {
-    nlmsg_len: u32,
-    nlmsg_type: u16,
-    nlmsg_flags: u16,
-    nlmsg_seq: u32,
-    nlmsg_pid: u32,
-}
-
 type ClientMap = Arc<Mutex<HashMap<usize, UnixStream>>>;
+
+#[derive(Parser, Debug)]
+#[command(author, version, about = "UDev event forwarder", long_about = None)]
+struct Args {
+    /// Echo mode: only print netlink events, don't forward to Unix socket
+    #[arg(long)]
+    echo: bool,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -27,43 +34,35 @@ async fn main() -> Result<()> {
         .filter_level(log::LevelFilter::Info)
         .init();
 
+    let args = Args::parse();
+
     if unsafe { libc::geteuid() } != 0 {
         error!("This program must be run as root to access netlink sockets");
         process::exit(1);
     }
 
-    info!("Starting udev event forwarder...");
+    if args.echo {
+        info!("Starting in echo mode - will only print netlink events");
+        run_echo_mode().await
+    } else {
+        info!("Starting udev event forwarder...");
+        run_forwarder_mode().await
+    }
+}
 
-    // Clean up any existing socket
-    let _ = std::fs::remove_file(UNIX_SOCKET_PATH);
-    
-    // Create Unix socket listener
-    let unix_listener = UnixListener::bind(UNIX_SOCKET_PATH)?;
-    info!("Unix socket listening on {}", UNIX_SOCKET_PATH);
-    
-    // Client connections map
-    let clients: ClientMap = Arc::new(Mutex::new(HashMap::new()));
-    let clients_accept = clients.clone();
-    let clients_forward = clients.clone();
-    
-    // Accept connections task
-    let accept_handle = tokio::spawn(async move {
-        accept_unix_connections(unix_listener, clients_accept).await
-    });
-
+async fn run_echo_mode() -> Result<()> {
     let (tx, mut rx) = sync::mpsc::unbounded_channel::<Vec<u8>>();
     let (shutdown_tx, shutdown_rx) = sync::oneshot::channel::<()>();
     let listener_handle =
         tokio::task::spawn_blocking(move || listen_netlink_events(tx, shutdown_rx));
 
-    info!("Listening for udev events... (Press Ctrl+C to stop)");
+    info!("Listening for udev events in echo mode... (Press Ctrl+C to stop)");
 
     tokio::select! {
-        _ = async { 
-            while let Some(data) = rx.recv().await { 
+        _ = async {
+            while let Some(data) = rx.recv().await {
                 handle_udev_event(&data);
-                forward_to_clients(&clients_forward, &data).await;
-            } 
+            }
         } => {},
         _ = wait_for_shutdown() => {
             info!("Shutdown signal received");
@@ -77,10 +76,58 @@ async fn main() -> Result<()> {
     {
         warn!("Listener task didn't complete in time");
     }
-    
+
+    info!("Echo mode stopped");
+    Ok(())
+}
+
+async fn run_forwarder_mode() -> Result<()> {
+    // Clean up any existing socket
+    let _ = std::fs::remove_file(UNIX_SOCKET_PATH);
+
+    // Create Unix socket listener
+    let unix_listener = UnixListener::bind(UNIX_SOCKET_PATH)?;
+    info!("Unix socket listening on {}", UNIX_SOCKET_PATH);
+
+    // Client connections map
+    let clients: ClientMap = Arc::new(Mutex::new(HashMap::new()));
+    let clients_accept = clients.clone();
+    let clients_forward = clients.clone();
+
+    // Accept connections task
+    let accept_handle =
+        tokio::spawn(async move { accept_unix_connections(unix_listener, clients_accept).await });
+
+    let (tx, mut rx) = sync::mpsc::unbounded_channel::<Vec<u8>>();
+    let (shutdown_tx, shutdown_rx) = sync::oneshot::channel::<()>();
+    let listener_handle =
+        tokio::task::spawn_blocking(move || listen_netlink_events(tx, shutdown_rx));
+
+    info!("Listening for udev events... (Press Ctrl+C to stop)");
+
+    tokio::select! {
+        _ = async {
+            while let Some(data) = rx.recv().await {
+                handle_udev_event(&data);
+                forward_to_clients(&clients_forward, &data).await;
+            }
+        } => {},
+        _ = wait_for_shutdown() => {
+            info!("Shutdown signal received");
+            let _ = shutdown_tx.send(());
+        }
+    }
+
+    if timeout(Duration::from_secs(SHUTDOWN_TIMEOUT_SECS), listener_handle)
+        .await
+        .is_err()
+    {
+        warn!("Listener task didn't complete in time");
+    }
+
     // Cancel accept task
     accept_handle.abort();
-    
+
     // Clean up socket file
     let _ = std::fs::remove_file(UNIX_SOCKET_PATH);
 
@@ -329,7 +376,7 @@ fn handle_udev_event(event_data: &[u8]) {
 
 async fn accept_unix_connections(listener: UnixListener, clients: ClientMap) -> Result<()> {
     let mut client_id = 0usize;
-    
+
     loop {
         match listener.accept().await {
             Ok((stream, _addr)) => {
@@ -349,17 +396,17 @@ async fn forward_to_clients(clients: &ClientMap, data: &[u8]) {
     let message = pack_message(data);
     let mut clients_guard = clients.lock().await;
     let mut disconnected = Vec::new();
-    
+
     for (id, stream) in clients_guard.iter_mut() {
         match stream.write_all(&message).await {
-            Ok(_) => {},
+            Ok(_) => {}
             Err(e) => {
                 warn!("Failed to write to client {}: {}", id, e);
                 disconnected.push(*id);
             }
         }
     }
-    
+
     // Remove disconnected clients
     for id in disconnected {
         clients_guard.remove(&id);
