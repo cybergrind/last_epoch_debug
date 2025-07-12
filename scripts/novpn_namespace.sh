@@ -5,6 +5,33 @@
 # It should use host local network gateway: 192.168.88.1
 # It should use nameserver=192.168.88.1
 
+
+UDEV_FORWARDER_PATH=./bin_tools/udev_forwarder
+UDEV_BIN="${UDEV_FORWARDER_PATH}/target/release/udev-rebroadcast"
+
+build_udev_forwarder () {
+    echo "Build udev forwarder"
+
+    if [ -f "$UDEV_BIN" ]; then
+        echo "Using existing udev forwarder binary: $UDEV_BIN"
+        return 0
+    fi
+    cd $UDEV_FORWARDER_PATH
+    cargo build --release
+}
+
+run_udev_forwarder_nohup () {
+    echo "Running udev forwarder in background..."
+    if [ ! -f "$UDEV_BIN" ]; then
+        echo "Udev forwarder binary not found, building it first..."
+        build_udev_forwarder
+    fi
+
+    # Run udev forwarder in the background
+    sudo nohup $UDEV_BIN &
+    echo "Udev forwarder started with PID: $!"
+}
+
 # Remove any existing namespace with the same name to start fresh
 if ip netns list | grep -q novpn; then
     echo "Removing existing 'novpn' namespace..."
@@ -188,22 +215,9 @@ if [ -n "$SLEEP_PID" ]; then
     sudo kill $SLEEP_PID 2>/dev/null || true
 fi
 
-# Add this simple device monitor:
+# Run udev forwarder
+run_udev_forwarder_nohup
 
-# Monitor /dev for new devices and trigger Steam refresh
-echo "Setting up /dev monitor for device changes..."
-(
-    while inotifywait -e create,delete /dev > /dev/null 2>&1; do
-        echo "Device change detected in /dev"
-        # Trigger udev rescan in namespace
-        sudo ip netns exec novpn udevadm trigger --action=add --subsystem-match=input --subsystem-match=hidraw > /dev/null 2>&1 &
-    done
-) &
-DEV_MONITOR_PID=$!
-
-trap "sudo kill $DEV_MONITOR_PID 2>/dev/null || true; sudo pkill -f 'socat.*:8765' 2>/dev/null || true" EXIT
-
-echo "✅ Device monitor started (PID: $DEV_MONITOR_PID)"
 
 # Verify connectivity
 echo "Testing connectivity from namespace..."
