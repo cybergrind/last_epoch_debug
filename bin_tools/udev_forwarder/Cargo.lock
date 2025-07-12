@@ -509,6 +509,7 @@ dependencies = [
  "log",
  "serde",
  "tokio",
+ "udev_forwarder",
 ]
 
 [[package]]

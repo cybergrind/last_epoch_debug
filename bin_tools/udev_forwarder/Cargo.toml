@@ -27,3 +27,9 @@ env_logger = "0.11"
 serde = { version = "1.0", features = ["derive"] }
 libc = "0.2"
 clap = { version = "4.0", features = ["derive"] }
+
+[features]
+test-utils = []
+
+[dev-dependencies]
+udev_forwarder = { path = ".", features = ["test-utils"] }
