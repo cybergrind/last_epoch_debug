@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use clap::Parser;
 use log::{error, info, warn};
-use std::{collections::HashMap, mem, process, ptr, sync::Arc, time::Duration};
+use std::{collections::HashMap, mem, process, sync::Arc, time::Duration};
 use tokio::{
     io::AsyncWriteExt,
     net::{UnixListener, UnixStream},
@@ -10,7 +10,7 @@ use tokio::{
     time::timeout,
 };
 use udev_forwarder::shared::{
-    pack_message, NetlinkMsgHeader, NETLINK_KOBJECT_UEVENT, UNIX_SOCKET_PATH,
+    pack_message, NETLINK_KOBJECT_UEVENT, NETLINK_MULTICAST_GROUP, UNIX_SOCKET_PATH,
 };
 
 const SOCKET_BUFFER_SIZE: i32 = 1024 * 1024;
@@ -149,7 +149,10 @@ fn listen_netlink_events(
     mut shutdown_rx: sync::oneshot::Receiver<()>,
 ) -> Result<()> {
     let (socket_fd, epoll_fd) = setup_sockets()?;
-    info!("Connected to netlink socket (epoll-based monitoring)");
+    info!(
+        "Connected to netlink socket (epoll-based monitoring, multicast group {})",
+        NETLINK_MULTICAST_GROUP
+    );
 
     let mut buffer = vec![0u8; EVENT_BUFFER_SIZE];
     let mut events = [libc::epoll_event { events: 0, u64: 0 }; 1];
@@ -195,7 +198,7 @@ fn setup_sockets() -> Result<(i32, i32)> {
 
     let mut addr: libc::sockaddr_nl = unsafe { mem::zeroed() };
     addr.nl_family = libc::AF_NETLINK as u16;
-    addr.nl_groups = 1;
+    addr.nl_groups = NETLINK_MULTICAST_GROUP;
 
     if unsafe {
         libc::bind(
@@ -297,7 +300,9 @@ fn process_socket_data(
                 return Ok(false);
             }
             n => {
+                info!("Received netlink message: {} bytes", n);
                 let event_data = extract_event_payload(&buffer[..n as usize]);
+                info!("Extracted payload: {} bytes", event_data.len());
                 if tx.send(event_data).is_err() {
                     return Ok(false);
                 }
@@ -308,20 +313,7 @@ fn process_socket_data(
 }
 
 fn extract_event_payload(data: &[u8]) -> Vec<u8> {
-    if data.len() >= mem::size_of::<NetlinkMsgHeader>() {
-        let header = unsafe { ptr::read_unaligned(data.as_ptr() as *const NetlinkMsgHeader) };
-        let header_size = mem::size_of::<NetlinkMsgHeader>();
-
-        if data.len() > header_size && header.nlmsg_len as usize >= header_size {
-            let payload_size = std::cmp::min(
-                header.nlmsg_len as usize - header_size,
-                data.len() - header_size,
-            );
-            if payload_size > 0 {
-                return data[header_size..header_size + payload_size].to_vec();
-            }
-        }
-    }
+    // Just pass through all data without any parsing
     data.to_vec()
 }
 
@@ -394,6 +386,8 @@ async fn accept_unix_connections(listener: UnixListener, clients: ClientMap) -> 
 
 async fn forward_to_clients(clients: &ClientMap, data: &[u8]) {
     let message = pack_message(data);
+    info!("Forwarding to Unix socket clients: original {} bytes, packed {} bytes (4 byte header + {} payload)", 
+          data.len(), message.len(), data.len());
     let mut clients_guard = clients.lock().await;
     let mut disconnected = Vec::new();
 

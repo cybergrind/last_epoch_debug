@@ -2,7 +2,9 @@ use anyhow::{anyhow, Result};
 use log::{error, info, warn};
 use std::mem;
 use tokio::{io::AsyncReadExt, net::UnixStream, signal};
-use udev_forwarder::shared::{NetlinkMsgHeader, NETLINK_KOBJECT_UEVENT, UNIX_SOCKET_PATH};
+use udev_forwarder::shared::{NETLINK_KOBJECT_UEVENT, NETLINK_MULTICAST_GROUP, UNIX_SOCKET_PATH};
+
+// Removed command line args - always send raw data
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -91,6 +93,11 @@ fn process_accumulated_data(accumulated: &mut Vec<u8>, netlink_fd: Option<i32>) 
 
         let message_data = accumulated[4..4 + size].to_vec();
         accumulated.drain(0..4 + size);
+
+        info!(
+            "Unpacked message from Unix socket: {} bytes",
+            message_data.len()
+        );
 
         handle_udev_event(&message_data);
 
@@ -186,24 +193,29 @@ async fn wait_for_shutdown() {
 }
 
 fn create_netlink_broadcast_socket() -> Result<i32> {
-    // Create netlink socket
+    // Create netlink socket with NONBLOCK flag
     let socket_fd = unsafe {
         libc::socket(
             libc::AF_NETLINK,
-            libc::SOCK_RAW | libc::SOCK_CLOEXEC,
+            libc::SOCK_RAW | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK,
             NETLINK_KOBJECT_UEVENT,
         )
     };
 
     if socket_fd == -1 {
-        return Err(anyhow!("Failed to create netlink socket"));
+        let errno = unsafe { *libc::__errno_location() };
+        return Err(anyhow!(
+            "Failed to create netlink socket: {}",
+            std::io::Error::from_raw_os_error(errno)
+        ));
     }
 
-    // Bind to broadcast
+    // Bind with our PID for sending
     let mut addr: libc::sockaddr_nl = unsafe { mem::zeroed() };
     addr.nl_family = libc::AF_NETLINK as u16;
-    addr.nl_pid = 0; // Use kernel PID for broadcasting
-    addr.nl_groups = 1; // Broadcast to multicast group 1
+    // addr.nl_pid = unsafe { libc::getpid() as u32 };  // Use our PID for sending
+    addr.nl_pid = 0;
+    addr.nl_groups = NETLINK_MULTICAST_GROUP; // Subscribe to multicast group 2 for sending
 
     if unsafe {
         libc::bind(
@@ -216,48 +228,47 @@ fn create_netlink_broadcast_socket() -> Result<i32> {
         unsafe {
             libc::close(socket_fd);
         }
-        return Err(anyhow!("Failed to bind netlink socket"));
+        let errno = unsafe { *libc::__errno_location() };
+        return Err(anyhow!(
+            "Failed to bind netlink socket: {}",
+            std::io::Error::from_raw_os_error(errno)
+        ));
     }
 
-    info!("Netlink broadcast socket created and bound");
+    info!(
+        "Netlink broadcast socket created and bound (fd={}, pid={})",
+        socket_fd,
+        unsafe { libc::getpid() }
+    );
     Ok(socket_fd)
 }
 
 fn broadcast_netlink_event(socket_fd: i32, event_data: &[u8]) -> Result<()> {
-    // Create netlink message with header
-    let total_len = mem::size_of::<NetlinkMsgHeader>() + event_data.len();
-    let mut message = Vec::with_capacity(total_len);
+    // Always send raw data exactly as received
+    info!(
+        "Broadcasting raw netlink data: {} bytes to multicast group {}",
+        event_data.len(),
+        NETLINK_MULTICAST_GROUP
+    );
 
-    // Create and add netlink header
-    let header = NetlinkMsgHeader {
-        nlmsg_len: total_len as u32,
-        nlmsg_type: 0, // Kernel event
-        nlmsg_flags: 0,
-        nlmsg_seq: 0,
-        nlmsg_pid: 0, // From kernel
-    };
-
-    let header_bytes = unsafe {
-        std::slice::from_raw_parts(
-            &header as *const _ as *const u8,
-            mem::size_of::<NetlinkMsgHeader>(),
-        )
-    };
-    message.extend_from_slice(header_bytes);
-    message.extend_from_slice(event_data);
+    // Log first few bytes for debugging
+    if event_data.len() > 0 {
+        let preview = &event_data[..std::cmp::min(32, event_data.len())];
+        info!("First {} bytes: {:02x?}", preview.len(), preview);
+    }
 
     // Setup destination address for broadcast
     let mut dest_addr: libc::sockaddr_nl = unsafe { mem::zeroed() };
     dest_addr.nl_family = libc::AF_NETLINK as u16;
     dest_addr.nl_pid = 0; // Broadcast to all
-    dest_addr.nl_groups = 1; // Multicast group 1
+    dest_addr.nl_groups = NETLINK_MULTICAST_GROUP; // Multicast group 2
 
-    // Send the message
+    // Send the raw event data
     let bytes_sent = unsafe {
         libc::sendto(
             socket_fd,
-            message.as_ptr() as *const libc::c_void,
-            message.len(),
+            event_data.as_ptr() as *const libc::c_void,
+            event_data.len(),
             0,
             &dest_addr as *const _ as *const libc::sockaddr,
             mem::size_of::<libc::sockaddr_nl>() as u32,
@@ -266,9 +277,21 @@ fn broadcast_netlink_event(socket_fd: i32, event_data: &[u8]) -> Result<()> {
 
     if bytes_sent == -1 {
         let errno = unsafe { *libc::__errno_location() };
-        return Err(anyhow!("Failed to send netlink message: errno {}", errno));
+        return Err(anyhow!(
+            "Failed to send netlink message: {}",
+            std::io::Error::from_raw_os_error(errno)
+        ));
     }
 
-    info!("Broadcast netlink event ({} bytes)", bytes_sent);
+    if bytes_sent as usize != event_data.len() {
+        warn!(
+            "Partial send: sent {} bytes out of {}",
+            bytes_sent,
+            event_data.len()
+        );
+    } else {
+        info!("Successfully broadcast {} bytes via netlink", bytes_sent);
+    }
+
     Ok(())
 }
