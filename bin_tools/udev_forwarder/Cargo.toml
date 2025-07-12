@@ -1,7 +1,19 @@
 [package]
 name = "udev_forwarder"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+
+[lib]
+name = "udev_forwarder"
+path = "src/lib.rs"
+
+[[bin]]
+name = "udev-forwarder"
+path = "src/bin/forwarder.rs"
+
+[[bin]]
+name = "udev-receiver"
+path = "src/bin/receiver.rs"
 
 [dependencies]
 tokio = { version = "1.0", features = ["full"] }

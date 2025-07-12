@@ -1,7 +1,8 @@
 use anyhow::{Result, anyhow};
 use log::{error, info, warn};
-use std::{mem, process, ptr, time::Duration};
-use tokio::{signal, sync, time::timeout};
+use std::{mem, process, ptr, time::Duration, sync::Arc, collections::HashMap};
+use tokio::{signal, sync::{self, Mutex}, time::timeout, net::{UnixListener, UnixStream}, io::AsyncWriteExt};
+use udev_forwarder::shared::{UNIX_SOCKET_PATH, pack_message};
 
 const NETLINK_KOBJECT_UEVENT: i32 = 15;
 const SOCKET_BUFFER_SIZE: i32 = 1024 * 1024;
@@ -18,6 +19,8 @@ struct NetlinkMsgHeader {
     nlmsg_pid: u32,
 }
 
+type ClientMap = Arc<Mutex<HashMap<usize, UnixStream>>>;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::Builder::from_default_env()
@@ -31,6 +34,23 @@ async fn main() -> Result<()> {
 
     info!("Starting udev event forwarder...");
 
+    // Clean up any existing socket
+    let _ = std::fs::remove_file(UNIX_SOCKET_PATH);
+    
+    // Create Unix socket listener
+    let unix_listener = UnixListener::bind(UNIX_SOCKET_PATH)?;
+    info!("Unix socket listening on {}", UNIX_SOCKET_PATH);
+    
+    // Client connections map
+    let clients: ClientMap = Arc::new(Mutex::new(HashMap::new()));
+    let clients_accept = clients.clone();
+    let clients_forward = clients.clone();
+    
+    // Accept connections task
+    let accept_handle = tokio::spawn(async move {
+        accept_unix_connections(unix_listener, clients_accept).await
+    });
+
     let (tx, mut rx) = sync::mpsc::unbounded_channel::<Vec<u8>>();
     let (shutdown_tx, shutdown_rx) = sync::oneshot::channel::<()>();
     let listener_handle =
@@ -39,7 +59,12 @@ async fn main() -> Result<()> {
     info!("Listening for udev events... (Press Ctrl+C to stop)");
 
     tokio::select! {
-        _ = async { while let Some(data) = rx.recv().await { handle_udev_event(&data); } } => {},
+        _ = async { 
+            while let Some(data) = rx.recv().await { 
+                handle_udev_event(&data);
+                forward_to_clients(&clients_forward, &data).await;
+            } 
+        } => {},
         _ = wait_for_shutdown() => {
             info!("Shutdown signal received");
             let _ = shutdown_tx.send(());
@@ -52,6 +77,12 @@ async fn main() -> Result<()> {
     {
         warn!("Listener task didn't complete in time");
     }
+    
+    // Cancel accept task
+    accept_handle.abort();
+    
+    // Clean up socket file
+    let _ = std::fs::remove_file(UNIX_SOCKET_PATH);
 
     info!("Forwarder stopped");
     Ok(())
@@ -293,5 +324,45 @@ fn handle_udev_event(event_data: &[u8]) {
         ),
         (Some(a), Some(d), None) => info!("Summary: {} action on {}", a, d),
         _ => warn!("Summary: Partial or malformed event"),
+    }
+}
+
+async fn accept_unix_connections(listener: UnixListener, clients: ClientMap) -> Result<()> {
+    let mut client_id = 0usize;
+    
+    loop {
+        match listener.accept().await {
+            Ok((stream, _addr)) => {
+                let mut clients_guard = clients.lock().await;
+                clients_guard.insert(client_id, stream);
+                info!("Unix socket client {} connected", client_id);
+                client_id += 1;
+            }
+            Err(e) => {
+                error!("Failed to accept Unix socket connection: {}", e);
+            }
+        }
+    }
+}
+
+async fn forward_to_clients(clients: &ClientMap, data: &[u8]) {
+    let message = pack_message(data);
+    let mut clients_guard = clients.lock().await;
+    let mut disconnected = Vec::new();
+    
+    for (id, stream) in clients_guard.iter_mut() {
+        match stream.write_all(&message).await {
+            Ok(_) => {},
+            Err(e) => {
+                warn!("Failed to write to client {}: {}", id, e);
+                disconnected.push(*id);
+            }
+        }
+    }
+    
+    // Remove disconnected clients
+    for id in disconnected {
+        clients_guard.remove(&id);
+        info!("Unix socket client {} disconnected", id);
     }
 }
